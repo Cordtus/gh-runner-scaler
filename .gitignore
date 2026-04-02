@@ -1,0 +1,8 @@
+config
+.env
+.state/
+.scaler.lock
+*.pyc
+__pycache__/
+CLAUDE.md
+.claude/

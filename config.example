@@ -1,0 +1,23 @@
+# GitHub PAT (classic) with admin:org + repo scopes
+GITHUB_TOKEN=""
+
+# LXC template container (stopped, runner software installed, not configured)
+TEMPLATE="gh-runner-template"
+
+# GitHub org
+ORG="Axionic-Labs"
+
+# Auto-scaled container name prefix
+PREFIX="gh-runner-auto"
+
+# Max auto-scaled containers (permanent runners don't count)
+MAX_AUTO_RUNNERS=6
+
+# Seconds a runner must be idle before teardown (default: 5 min)
+IDLE_TIMEOUT=300
+
+# Runner labels (comma-separated)
+LABELS="self-hosted,linux,x64"
+
+# LXC remote name (empty for local, e.g. "nodev2" for remote host)
+LXC_REMOTE=""

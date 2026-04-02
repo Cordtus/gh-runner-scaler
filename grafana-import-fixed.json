@@ -1,0 +1,126 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": {"type": "loki", "uid": "grafanacloud-axionic-logs"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 3}, {"color": "red", "value": 6}]},
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 5, "w": 4, "x": 0, "y": 0},
+      "id": 1,
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "area", "justifyMode": "auto"},
+      "targets": [{"datasource": {"type": "loki", "uid": "grafanacloud-axionic-logs"}, "editorMode": "code", "expr": "sum_over_time({job=\"gh-runner-scaler\", service=\"runner-metrics\"} | json | unwrap total_runners | __error__=\"\" [1m])", "legendFormat": "total", "queryType": "range", "refId": "A"}],
+      "title": "Total Runners",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "loki", "uid": "grafanacloud-axionic-logs"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 2}, {"color": "red", "value": 5}]},
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 5, "w": 4, "x": 4, "y": 0},
+      "id": 2,
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "area", "justifyMode": "auto"},
+      "targets": [{"datasource": {"type": "loki", "uid": "grafanacloud-axionic-logs"}, "editorMode": "code", "expr": "sum_over_time({job=\"gh-runner-scaler\", service=\"runner-metrics\"} | json | unwrap busy_runners | __error__=\"\" [1m])", "legendFormat": "busy", "queryType": "range", "refId": "A"}],
+      "title": "Busy Runners",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "loki", "uid": "grafanacloud-axionic-logs"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}, {"color": "purple", "value": 3}]},
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 5, "w": 4, "x": 8, "y": 0},
+      "id": 3,
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "area", "justifyMode": "auto"},
+      "targets": [{"datasource": {"type": "loki", "uid": "grafanacloud-axionic-logs"}, "editorMode": "code", "expr": "sum_over_time({job=\"gh-runner-scaler\", service=\"runner-metrics\"} | json | unwrap auto_runners | __error__=\"\" [1m])", "legendFormat": "auto", "queryType": "range", "refId": "A"}],
+      "title": "Auto-Scaled",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "loki", "uid": "grafanacloud-axionic-logs"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 1}, {"color": "green", "value": 2}]},
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 5, "w": 4, "x": 12, "y": 0},
+      "id": 4,
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "area", "justifyMode": "auto"},
+      "targets": [{"datasource": {"type": "loki", "uid": "grafanacloud-axionic-logs"}, "editorMode": "code", "expr": "sum_over_time({job=\"gh-runner-scaler\", service=\"runner-metrics\"} | json | unwrap idle_runners | __error__=\"\" [1m])", "legendFormat": "idle", "queryType": "range", "refId": "A"}],
+      "title": "Idle Runners",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "loki", "uid": "grafanacloud-axionic-logs"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "Runners", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 15, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "stepAfter", "lineWidth": 2, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "auto", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
+          "decimals": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "min": 0
+        },
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "Busy"}, "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}, {"id": "custom.fillOpacity", "value": 25}]},
+          {"matcher": {"id": "byName", "options": "Idle"}, "properties": [{"id": "color", "value": {"fixedColor": "green", "mode": "fixed"}}]},
+          {"matcher": {"id": "byName", "options": "Auto-scaled"}, "properties": [{"id": "color", "value": {"fixedColor": "purple", "mode": "fixed"}}, {"id": "custom.fillOpacity", "value": 20}]},
+          {"matcher": {"id": "byName", "options": "Total"}, "properties": [{"id": "color", "value": {"fixedColor": "blue", "mode": "fixed"}}, {"id": "custom.lineStyle", "value": {"dash": [10, 10], "fill": "dash"}}, {"id": "custom.fillOpacity", "value": 0}]}
+        ]
+      },
+      "gridPos": {"h": 10, "w": 16, "x": 0, "y": 5},
+      "id": 5,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "none"}},
+      "targets": [
+        {"datasource": {"type": "loki", "uid": "grafanacloud-axionic-logs"}, "editorMode": "code", "expr": "sum_over_time({job=\"gh-runner-scaler\", service=\"runner-metrics\"} | json | unwrap busy_runners | __error__=\"\" [1m])", "legendFormat": "Busy", "queryType": "range", "refId": "A"},
+        {"datasource": {"type": "loki", "uid": "grafanacloud-axionic-logs"}, "editorMode": "code", "expr": "sum_over_time({job=\"gh-runner-scaler\", service=\"runner-metrics\"} | json | unwrap idle_runners | __error__=\"\" [1m])", "legendFormat": "Idle", "queryType": "range", "refId": "B"},
+        {"datasource": {"type": "loki", "uid": "grafanacloud-axionic-logs"}, "editorMode": "code", "expr": "sum_over_time({job=\"gh-runner-scaler\", service=\"runner-metrics\"} | json | unwrap auto_runners | __error__=\"\" [1m])", "legendFormat": "Auto-scaled", "queryType": "range", "refId": "C"},
+        {"datasource": {"type": "loki", "uid": "grafanacloud-axionic-logs"}, "editorMode": "code", "expr": "sum_over_time({job=\"gh-runner-scaler\", service=\"runner-metrics\"} | json | unwrap total_runners | __error__=\"\" [1m])", "legendFormat": "Total", "queryType": "range", "refId": "D"}
+      ],
+      "title": "Runner Utilization",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "loki", "uid": "grafanacloud-axionic-logs"},
+      "gridPos": {"h": 8, "w": 16, "x": 0, "y": 15},
+      "id": 6,
+      "options": {"dedupStrategy": "none", "enableLogDetails": true, "prettifyLogMessage": false, "showCommonLabels": false, "showLabels": false, "showTime": true, "sortOrder": "Descending", "wrapLogMessage": false},
+      "targets": [{"datasource": {"type": "loki", "uid": "grafanacloud-axionic-logs"}, "editorMode": "code", "expr": "{job=\"gh-runner-scaler\", service=\"runner-metrics\"} | json | line_format \"runners={{.total_runners}} busy={{.busy_runners}} idle={{.idle_runners}} auto={{.auto_runners}} permanent={{.permanent_runners}}\"", "queryType": "range", "refId": "A"}],
+      "title": "Scaler Event Log",
+      "type": "logs"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["github", "runners", "ci"],
+  "templating": {"list": []},
+  "time": {"from": "now-3h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "GitHub Actions Runner Scaler",
+  "uid": null,
+  "version": 0
+}

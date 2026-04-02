@@ -1,0 +1,161 @@
+{
+  "dashboard": {
+    "title": "GitHub Actions Runner Scaler",
+    "tags": ["github", "runners", "ci"],
+    "timezone": "browser",
+    "refresh": "30s",
+    "time": {
+      "from": "now-3h",
+      "to": "now"
+    },
+    "panels": [
+      {
+        "title": "Total Runners",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
+        "targets": [
+          {
+            "expr": "{job=\"gh-runner-scaler\", service=\"runner-metrics\"} | json | unwrap total_runners | __error__=\"\" ",
+            "legendFormat": "total",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "thresholds": {
+              "steps": [
+                {"color": "green", "value": null},
+                {"color": "yellow", "value": 3},
+                {"color": "red", "value": 6}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "title": "Busy Runners",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 4, "x": 4, "y": 0},
+        "targets": [
+          {
+            "expr": "{job=\"gh-runner-scaler\", service=\"runner-metrics\"} | json | unwrap busy_runners | __error__=\"\" ",
+            "legendFormat": "busy",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": {"mode": "thresholds"},
+            "thresholds": {
+              "steps": [
+                {"color": "green", "value": null},
+                {"color": "yellow", "value": 2},
+                {"color": "red", "value": 5}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "title": "Auto-Scaled Runners",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 4, "x": 8, "y": 0},
+        "targets": [
+          {
+            "expr": "{job=\"gh-runner-scaler\", service=\"runner-metrics\"} | json | unwrap auto_runners | __error__=\"\" ",
+            "legendFormat": "auto",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": {"mode": "thresholds"},
+            "thresholds": {
+              "steps": [
+                {"color": "blue", "value": null},
+                {"color": "purple", "value": 3}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "title": "Idle Runners",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 4, "x": 12, "y": 0},
+        "targets": [
+          {
+            "expr": "{job=\"gh-runner-scaler\", service=\"runner-metrics\"} | json | unwrap idle_runners | __error__=\"\" ",
+            "legendFormat": "idle",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": {"mode": "thresholds"},
+            "thresholds": {
+              "steps": [
+                {"color": "red", "value": null},
+                {"color": "yellow", "value": 1},
+                {"color": "green", "value": 2}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "title": "Runner Utilization Over Time",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 16, "x": 0, "y": 4},
+        "targets": [
+          {
+            "expr": "{job=\"gh-runner-scaler\", service=\"runner-metrics\"} | json | unwrap busy_runners | __error__=\"\" ",
+            "legendFormat": "Busy",
+            "refId": "A"
+          },
+          {
+            "expr": "{job=\"gh-runner-scaler\", service=\"runner-metrics\"} | json | unwrap idle_runners | __error__=\"\" ",
+            "legendFormat": "Idle",
+            "refId": "B"
+          },
+          {
+            "expr": "{job=\"gh-runner-scaler\", service=\"runner-metrics\"} | json | unwrap auto_runners | __error__=\"\" ",
+            "legendFormat": "Auto-scaled",
+            "refId": "C"
+          },
+          {
+            "expr": "{job=\"gh-runner-scaler\", service=\"runner-metrics\"} | json | unwrap total_runners | __error__=\"\" ",
+            "legendFormat": "Total",
+            "refId": "D"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "drawStyle": "line",
+              "fillOpacity": 10,
+              "pointSize": 5
+            }
+          },
+          "overrides": [
+            {"matcher": {"id": "byName", "options": "Busy"}, "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}]},
+            {"matcher": {"id": "byName", "options": "Idle"}, "properties": [{"id": "color", "value": {"fixedColor": "green", "mode": "fixed"}}]},
+            {"matcher": {"id": "byName", "options": "Auto-scaled"}, "properties": [{"id": "color", "value": {"fixedColor": "purple", "mode": "fixed"}}]},
+            {"matcher": {"id": "byName", "options": "Total"}, "properties": [{"id": "color", "value": {"fixedColor": "blue", "mode": "fixed"}}, {"id": "custom.lineStyle", "value": {"dash": [10, 10], "fill": "dash"}}]}
+          ]
+        }
+      },
+      {
+        "title": "Scaler Events",
+        "type": "logs",
+        "gridPos": {"h": 8, "w": 16, "x": 0, "y": 12},
+        "targets": [
+          {
+            "expr": "{job=\"gh-runner-scaler\", service=\"runner-metrics\"} | json | line_format \"{{.total_runners}} total, {{.busy_runners}} busy, {{.auto_runners}} auto\"",
+            "refId": "A"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,12 @@
+[Unit]
+Description=GitHub Actions Runner Metrics Collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /home/bv/gh-runner-scaler/metrics.py
+Environment=GRAFANA_CLOUD_API_KEY=your-grafana-cloud-api-key-here
+Environment=LOKI_PUSH_URL=https://logs-prod-042.grafana.net/loki/api/v1/push
+Environment=LOKI_USERNAME=1494650
+User=bv
