@@ -18,6 +18,8 @@ IDLE_TIMEOUT=300
 LABELS="self-hosted,linux,x64"
 GITHUB_TOKEN=""
 LXC_REMOTE=""
+CACHE_POOL=""
+CACHE_VOLUME=""
 
 if [[ -f "$CONFIG_FILE" ]]; then
 	source "$CONFIG_FILE"
@@ -100,6 +102,13 @@ scale_up() {
 	log "Scaling up: creating $name from $TEMPLATE"
 
 	lxc copy "${LXC_PREFIX}${TEMPLATE}" "${LXC_PREFIX}${name}"
+
+	# Mount persistent cache volume (shared across all ephemeral runners)
+	if [[ -n "$CACHE_POOL" && -n "$CACHE_VOLUME" ]]; then
+		lxc storage volume attach "${LXC_PREFIX}${CACHE_POOL}" "$CACHE_VOLUME" "${LXC_PREFIX}${name}" /cache
+		log "Attached cache volume ${CACHE_POOL}/${CACHE_VOLUME} to $name"
+	fi
+
 	lxc start "${LXC_PREFIX}${name}"
 
 	# Wait for networking + runner binary (90s for ZFS clone + boot)
@@ -117,6 +126,20 @@ scale_up() {
 		lxc stop "${LXC_PREFIX}${name}" --force 2>/dev/null || true
 		lxc delete "${LXC_PREFIX}${name}" --force 2>/dev/null || true
 		return 1
+	fi
+
+	# Wire up cache paths so tools find them at standard locations
+	if [[ -n "$CACHE_POOL" && -n "$CACHE_VOLUME" ]]; then
+		lxc exec "${LXC_PREFIX}${name}" -- bash -c '
+			ln -sfn /cache/npm /home/runner/.npm
+			ln -sfn /cache/yarn /home/runner/.cache/yarn
+			mkdir -p /home/runner/.cache
+			ln -sfn /cache/pip /home/runner/.cache/pip
+			# axionic-ui: workflows expect it at /opt/axionic-ui
+			ln -sfn /cache/axionic-ui /opt/axionic-ui
+			# tool cache for actions/setup-node, setup-python, etc.
+			ln -sfn /cache/tool-cache /opt/hostedtoolcache
+		' 2>/dev/null || log "WARNING: cache symlink setup failed for $name"
 	fi
 
 	# Configure runner as ephemeral so it self-removes after one job.

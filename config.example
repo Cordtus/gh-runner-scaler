@@ -21,3 +21,8 @@ LABELS="self-hosted,linux,x64"
 
 # LXC remote name (empty for local, e.g. "nodev2" for remote host)
 LXC_REMOTE=""
+
+# Persistent cache volume (shared across ephemeral runners)
+# Create with: lxc storage volume create <pool> <volume>
+CACHE_POOL=""
+CACHE_VOLUME=""
