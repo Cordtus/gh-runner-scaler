@@ -8,11 +8,9 @@ Three systemd services run on the runner host:
 
 | Service | Description | Schedule |
 |---------|-------------|----------|
-| `gh-runner-scaler` | Polls GitHub API, scales containers up/down | Every 30s (timer) |
-| `gh-runner-webhook` | Listens for `workflow_job` events, triggers scaler immediately | Persistent (long-running) |
-| `gh-runner-metrics` | Pushes runner state to Grafana Cloud Loki | Every 60s (timer) |
-
-An optional `gh-runner-ui-sync` timer keeps a shared `axionic-ui` checkout current on the cache volume.
+| `gh-runner-scaler` | Polls GitHub API, scales containers up/down | Every 30s (timer, safety net) |
+| `gh-runner-webhook` | Handles `workflow_job` + `push` events, triggers scaler and cache syncs | Persistent (long-running) |
+| `gh-runner-metrics` | Pushes runner/workflow/host metrics to Grafana Cloud Loki | Every 60s (timer) |
 
 ## Runner Lifecycle
 
@@ -24,7 +22,7 @@ lxc copy template -> lxc start -> wait for boot (90s max)
 
 Scale-down handles three cases: stopped ephemeral containers (immediate), idle runners past `IDLE_TIMEOUT`, and orphaned containers. Deregistration is belt-and-suspenders: `config.sh remove` followed by an API DELETE.
 
-The webhook bypasses poll latency -- when GitHub fires a `workflow_job.queued` event, the scaler runs within 2 seconds (debounced to collapse concurrent bursts).
+The webhook is the primary event driver. When GitHub fires a `workflow_job.queued` event, the scaler runs within 2 seconds (debounced to collapse concurrent bursts). Push events to tracked repos (e.g., axionic-ui) trigger cache volume syncs via `lxc exec` on a running container -- no timers or temp containers needed.
 
 ## Prerequisites
 
@@ -41,17 +39,15 @@ The webhook bypasses poll latency -- when GitHub fires a `workflow_job.queued` e
 cp config.example config
 # Edit config -- set GITHUB_TOKEN at minimum
 
-# 2. Install systemd units (scaler timer + ui-sync timer)
+# 2. Install systemd units (scaler timer + webhook + metrics)
 sudo ./install.sh
 
-# 3. Install webhook + metrics manually (they need secrets in Environment= lines)
-# Edit gh-runner-webhook.service: set GH_WEBHOOK_SECRET
-# Edit gh-runner-metrics.service: set GRAFANA_CLOUD_API_KEY, LOKI_PUSH_URL, LOKI_USERNAME
-sudo cp gh-runner-webhook.service gh-runner-metrics.service gh-runner-metrics.timer /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now gh-runner-webhook.service gh-runner-metrics.timer
+# 3. Edit service files with secrets before install.sh copies them:
+# gh-runner-webhook.service: set GH_WEBHOOK_SECRET, LXC_REMOTE
+# gh-runner-metrics.service: set GRAFANA_CLOUD_API_KEY, LOKI_PUSH_URL, LOKI_USERNAME
 
 # 4. Create the org webhook (webhook listener must be reachable)
+# Subscribe to: workflow_job, push
 ./setup-webhook.sh https://your-host:9876 your-webhook-secret
 ```
 
@@ -88,7 +84,7 @@ This eliminates cold caches on every job without sacrificing ephemeral container
 
 ## Grafana Dashboard
 
-Import `grafana-dashboard.json` into Grafana. Requires a Loki datasource receiving the metrics pushed by `metrics.py`. The dashboard shows total/busy/idle/auto-scaled runner counts, utilization over time, and a scaler event log.
+Import `grafana-dashboard.json` into Grafana. Requires a Loki datasource receiving the metrics pushed by `metrics.py`. The dashboard shows runner pool state, utilization trends, recent workflow run durations/outcomes, cache pool storage, and container counts.
 
 ## Design Notes
 

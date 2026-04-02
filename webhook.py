@@ -2,11 +2,11 @@
 """GitHub webhook listener for runner auto-scaler.
 
 Central event coordinator for the self-hosted runner infrastructure.
-Handles all org-level webhook events and dispatches to appropriate handlers:
+Handles org-level webhook events:
 
 - workflow_job.queued    -> trigger scaler (spin up runners)
 - workflow_job.completed -> trigger scaler (cleanup)
-- push to deps           -> sync shared dependencies on cache volume
+- push to tracked repos  -> update cache volume via lxc exec
 """
 
 import hashlib
@@ -16,17 +16,16 @@ import os
 import subprocess
 import sys
 import threading
-import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 WEBHOOK_SECRET = os.environ.get("GH_WEBHOOK_SECRET", "")
 SCALER_SCRIPT = os.environ.get("SCALER_SCRIPT", "/home/bv/gh-runner-scaler/gh-runner-scaler.sh")
-SYNC_SCRIPT = os.environ.get("SYNC_SCRIPT", "/home/bv/gh-runner-scaler/sync-cache-deps.sh")
 PORT = int(os.environ.get("WEBHOOK_PORT", "9876"))
+LXC_REMOTE = os.environ.get("LXC_REMOTE", "")
 DEBOUNCE_SECONDS = 2
 
-# Repos whose pushes to main should trigger a cache volume sync.
-# Map of repo full_name -> path on the cache volume.
+# Repos whose pushes to default branch trigger a cache volume sync.
+# repo full_name -> cache path inside the container
 SYNCED_REPOS = {
     "Axionic-Labs/axionic-ui": "/cache/axionic-ui",
 }
@@ -44,19 +43,8 @@ def verify_signature(payload: bytes, signature: str) -> bool:
     return hmac.compare_digest(expected, signature)
 
 
-def run_script(script: str, args: list[str] | None = None, label: str = "script"):
-    """Run a shell script with optional args. Logs failures."""
-    cmd = [script] + (args or [])
-    try:
-        subprocess.run(cmd, timeout=120, capture_output=True)
-    except subprocess.TimeoutExpired:
-        print(f"WARNING: {label} timed out after 120s", flush=True)
-    except Exception as e:
-        print(f"ERROR: {label} failed: {e}", flush=True)
-
-
 def debounced(key: str, delay: float, fn, *args):
-    """Schedule fn(*args) after delay seconds, collapsing rapid calls with the same key."""
+    """Schedule fn(*args) after delay, collapsing rapid calls with the same key."""
     with _debounce_lock:
         existing = _debounce_timers.get(key)
         if existing is not None:
@@ -64,6 +52,60 @@ def debounced(key: str, delay: float, fn, *args):
         timer = threading.Timer(delay, fn, args=args)
         _debounce_timers[key] = timer
         timer.start()
+
+
+def run_scaler(label: str = "scaler"):
+    """Run the scaler script."""
+    try:
+        subprocess.run([SCALER_SCRIPT], timeout=120, capture_output=True)
+    except subprocess.TimeoutExpired:
+        print(f"WARNING: {label} timed out after 120s", flush=True)
+    except Exception as e:
+        print(f"ERROR: {label} failed: {e}", flush=True)
+
+
+def find_running_container() -> str | None:
+    """Find a running container to exec into for cache updates."""
+    lxc_prefix = f"{LXC_REMOTE}:" if LXC_REMOTE else ""
+    try:
+        result = subprocess.run(
+            ["/snap/bin/lxc", "list", lxc_prefix, "--format", "json"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        containers = json.loads(result.stdout)
+        running = [c["name"] for c in containers if c.get("status") == "Running"]
+        # Prefer the permanent runner
+        for name in running:
+            if name == "gh-runner":
+                return name
+        return running[0] if running else None
+    except Exception:
+        return None
+
+
+def sync_cache_repo(repo: str, cache_path: str):
+    """Update a repo on the cache volume via lxc exec."""
+    container = find_running_container()
+    if not container:
+        print(f"WARNING: no running container for cache sync of {repo}", flush=True)
+        return
+
+    lxc_prefix = f"{LXC_REMOTE}:" if LXC_REMOTE else ""
+    target = f"{lxc_prefix}{container}"
+    try:
+        result = subprocess.run(
+            ["/snap/bin/lxc", "exec", target, "--", "bash", "-c",
+             f"git config --global --add safe.directory '{cache_path}' 2>/dev/null; "
+             f"git -C '{cache_path}' fetch origin main 2>&1; "
+             f"git -C '{cache_path}' reset --hard origin/main 2>&1; "
+             f"git -C '{cache_path}' log --oneline -1"],
+            capture_output=True, text=True, timeout=30,
+        )
+        print(f"Cache sync {repo} via {container}: {result.stdout.strip()}", flush=True)
+    except Exception as e:
+        print(f"ERROR: cache sync {repo} failed: {e}", flush=True)
 
 
 class WebhookHandler(BaseHTTPRequestHandler):
@@ -98,10 +140,10 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
         if action == "queued":
             print(f"Job queued: {repo} / {name} -- scheduling scaler", flush=True)
-            debounced("scaler", DEBOUNCE_SECONDS, run_script, SCALER_SCRIPT, None, "scaler")
+            debounced("scaler", DEBOUNCE_SECONDS, run_scaler, "scaler")
         elif action == "completed":
             print(f"Job completed: {repo} / {name} -- scheduling cleanup", flush=True)
-            debounced("scaler", DEBOUNCE_SECONDS, run_script, SCALER_SCRIPT, None, "scaler")
+            debounced("scaler", DEBOUNCE_SECONDS, run_scaler, "scaler")
 
     def _handle_push(self, data: dict):
         repo = data.get("repository", {}).get("full_name", "")
@@ -110,17 +152,13 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
         if repo not in SYNCED_REPOS:
             return
-
         if ref != "refs/heads/main":
             return
 
         cache_path = SYNCED_REPOS[repo]
         repo_name = repo.split("/")[-1]
         print(f"Push to {repo} main ({after}) -- syncing {cache_path}", flush=True)
-        debounced(
-            f"sync-{repo_name}", DEBOUNCE_SECONDS,
-            run_script, SYNC_SCRIPT, [repo, cache_path], f"sync-{repo_name}"
-        )
+        debounced(f"sync-{repo_name}", DEBOUNCE_SECONDS, sync_cache_repo, repo, cache_path)
 
     def do_GET(self):
         self.send_response(200)

@@ -9,6 +9,7 @@ ExecStart=/usr/bin/python3 /home/bv/gh-runner-scaler/webhook.py
 Environment=GH_WEBHOOK_SECRET=your-webhook-secret-here
 Environment=SCALER_SCRIPT=/home/bv/gh-runner-scaler/gh-runner-scaler.sh
 Environment=WEBHOOK_PORT=9876
+Environment=LXC_REMOTE=
 Restart=on-failure
 RestartSec=5
 User=root
