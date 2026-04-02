@@ -30,12 +30,16 @@ ORG = config.get("ORG", "Axionic-Labs")
 PREFIX = config.get("PREFIX", "gh-runner-auto")
 
 # Loki config
-LOKI_PUSH_URL = os.environ.get("LOKI_PUSH_URL", "https://logs-prod-042.grafana.net/loki/api/v1/push")
-LOKI_USERNAME = os.environ.get("LOKI_USERNAME", "1494650")
+LOKI_PUSH_URL = os.environ.get("LOKI_PUSH_URL", "")
+LOKI_USERNAME = os.environ.get("LOKI_USERNAME", "")
 GRAFANA_CLOUD_API_KEY = os.environ.get("GRAFANA_CLOUD_API_KEY", "")
 
 if not GITHUB_TOKEN:
     print("ERROR: GITHUB_TOKEN not found in config", file=sys.stderr)
+    sys.exit(1)
+
+if not LOKI_PUSH_URL or not LOKI_USERNAME:
+    print("ERROR: LOKI_PUSH_URL and LOKI_USERNAME env vars must be set", file=sys.stderr)
     sys.exit(1)
 
 if not GRAFANA_CLOUD_API_KEY:

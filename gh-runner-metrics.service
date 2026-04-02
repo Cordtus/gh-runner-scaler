@@ -7,6 +7,6 @@ Wants=network-online.target
 Type=oneshot
 ExecStart=/usr/bin/python3 /home/bv/gh-runner-scaler/metrics.py
 Environment=GRAFANA_CLOUD_API_KEY=your-grafana-cloud-api-key-here
-Environment=LOKI_PUSH_URL=https://logs-prod-042.grafana.net/loki/api/v1/push
-Environment=LOKI_USERNAME=1494650
+Environment=LOKI_PUSH_URL=your-loki-push-url-here
+Environment=LOKI_USERNAME=your-loki-username-here
 User=bv
