@@ -1,9 +1,0 @@
-[Unit]
-Description=Sync axionic-ui on runner cache volume
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/home/bv/gh-runner-scaler/sync-axionic-ui.sh
-User=root
