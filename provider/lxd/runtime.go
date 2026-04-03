@@ -187,15 +187,34 @@ func (r *Runtime) CloneFromTemplate(ctx context.Context, name string) error {
 	}
 
 	// Clear the inherited MAC address so LXD generates a fresh one.
-	// Without this, the clone has the same hwaddr as the template and
-	// LXD refuses to start it ("MAC address already defined on another NIC").
+	// The MAC lives in volatile config (volatile.eth0.hwaddr), not in
+	// the device config. Without clearing it, LXD refuses to start the
+	// clone ("MAC address already defined on another NIC").
 	inst, etag, err := r.server.GetInstance(name)
 	if err != nil {
 		return fmt.Errorf("getting cloned instance %s: %w", name, err)
 	}
-	if eth0, ok := inst.Devices["eth0"]; ok {
-		delete(eth0, "hwaddr")
-		inst.Devices["eth0"] = eth0
+
+	changed := false
+
+	// Clear volatile MAC entries for all NICs.
+	for key := range inst.Config {
+		if strings.HasSuffix(key, ".hwaddr") && strings.HasPrefix(key, "volatile.") {
+			delete(inst.Config, key)
+			changed = true
+		}
+	}
+
+	// Also clear hwaddr from device config if present.
+	for devName, dev := range inst.Devices {
+		if _, ok := dev["hwaddr"]; ok {
+			delete(dev, "hwaddr")
+			inst.Devices[devName] = dev
+			changed = true
+		}
+	}
+
+	if changed {
 		updateOp, err := r.server.UpdateInstance(name, inst.Writable(), etag)
 		if err != nil {
 			return fmt.Errorf("clearing MAC on %s: %w", name, err)
