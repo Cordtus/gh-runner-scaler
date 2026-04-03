@@ -106,7 +106,15 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 		case isRunnerBusy(c.Name, runners):
 			r.state.SetLastActive(ctx, c.Name, now)
 
+		case !hasRunner(c.Name, runners):
+			// Container exists but has no registered runner -- orphaned.
+			// This catches containers left behind by crashed scalers,
+			// failed config.sh, or manual intervention.
+			r.log.Info("orphaned container (no registered runner)", "container", c.Name)
+			r.scaleDown(ctx, c.Name, runners)
+
 		default:
+			// Container is running with a registered idle runner.
 			lastActive, err := r.state.GetLastActive(ctx, c.Name)
 			if err != nil {
 				// No state file -- initialize it.
@@ -299,6 +307,15 @@ func buildSnapshot(runners []domain.Runner, prefix string) domain.RunnerSnapshot
 func isRunnerBusy(containerName string, runners []domain.Runner) bool {
 	for _, r := range runners {
 		if r.Name == containerName && r.Busy {
+			return true
+		}
+	}
+	return false
+}
+
+func hasRunner(containerName string, runners []domain.Runner) bool {
+	for _, r := range runners {
+		if r.Name == containerName {
 			return true
 		}
 	}

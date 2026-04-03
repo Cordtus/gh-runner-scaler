@@ -7,6 +7,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -24,18 +26,40 @@ type Runtime struct {
 }
 
 // New connects to a local or remote LXD daemon and returns a Runtime.
+//
+// Connection priority:
+//  1. If remoteURL is set, connect over HTTPS with TLS client certs.
+//  2. If remote is set (e.g. "nodev2"), look up the address from the
+//     standard LXD client config at ~/.config/lxc/config.yml.
+//  3. Otherwise, connect to the local Unix socket.
+//
+// TLS certs are read from certPath/keyPath if provided, or from the
+// standard LXD client config directory (~/.config/lxc/).
 func New(socket, remote, remoteURL, template string) (*Runtime, error) {
 	var server lxdclient.InstanceServer
 	var err error
 
-	if remoteURL != "" {
-		// Remote HTTPS connection
-		server, err = lxdclient.ConnectLXD(remoteURL, &lxdclient.ConnectionArgs{})
+	switch {
+	case remoteURL != "":
+		// Explicit remote URL -- use TLS client certs.
+		server, err = connectRemote(remoteURL)
 		if err != nil {
 			return nil, fmt.Errorf("connecting to remote LXD at %s: %w", remoteURL, err)
 		}
-	} else {
-		// Local Unix socket connection
+
+	case remote != "":
+		// Named remote -- resolve from the LXD client config.
+		addr, err := resolveRemoteAddr(remote)
+		if err != nil {
+			return nil, fmt.Errorf("resolving remote %q: %w", remote, err)
+		}
+		server, err = connectRemote(addr)
+		if err != nil {
+			return nil, fmt.Errorf("connecting to remote %q at %s: %w", remote, addr, err)
+		}
+
+	default:
+		// Local Unix socket.
 		socketPath := socket
 		if socketPath == "" {
 			socketPath = "/var/snap/lxd/common/lxd/unix.socket"
@@ -51,6 +75,92 @@ func New(socket, remote, remoteURL, template string) (*Runtime, error) {
 		template: template,
 		remote:   remote,
 	}, nil
+}
+
+// connectRemote connects to a remote LXD daemon over HTTPS using
+// TLS client certs from the standard LXD config directory.
+func connectRemote(addr string) (lxdclient.InstanceServer, error) {
+	configDir := lxdConfigDir()
+	certPath := filepath.Join(configDir, "client.crt")
+	keyPath := filepath.Join(configDir, "client.key")
+
+	clientCert, err := os.ReadFile(certPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading client cert %s: %w", certPath, err)
+	}
+	clientKey, err := os.ReadFile(keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading client key %s: %w", keyPath, err)
+	}
+
+	// Read the server cert if available (for certificate pinning).
+	serverCert := ""
+	serverCertDir := filepath.Join(configDir, "servercerts")
+	entries, _ := os.ReadDir(serverCertDir)
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".crt") {
+			data, err := os.ReadFile(filepath.Join(serverCertDir, e.Name()))
+			if err == nil {
+				serverCert = string(data)
+				break
+			}
+		}
+	}
+
+	return lxdclient.ConnectLXD(addr, &lxdclient.ConnectionArgs{
+		TLSClientCert: string(clientCert),
+		TLSClientKey:  string(clientKey),
+		TLSServerCert: serverCert,
+	})
+}
+
+// resolveRemoteAddr looks up a named remote's address from the LXD client
+// config file at ~/.config/lxc/config.yml. This is a minimal YAML parser
+// that avoids pulling in a YAML dependency just for this lookup.
+func resolveRemoteAddr(name string) (string, error) {
+	configPath := filepath.Join(lxdConfigDir(), "config.yml")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return "", fmt.Errorf("reading LXD config %s: %w", configPath, err)
+	}
+
+	// Simple line-by-line parse: find "  <name>:" then next "    addr: <value>"
+	lines := strings.Split(string(data), "\n")
+	inRemote := false
+	needle := "  " + name + ":"
+	for _, line := range lines {
+		if strings.TrimRight(line, " \t") == needle {
+			inRemote = true
+			continue
+		}
+		if inRemote {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "addr:") {
+				addr := strings.TrimSpace(strings.TrimPrefix(trimmed, "addr:"))
+				if addr == "" || addr == "unix://" {
+					return "", fmt.Errorf("remote %q has no HTTPS address", name)
+				}
+				return addr, nil
+			}
+			// If we hit another remote definition, stop.
+			if !strings.HasPrefix(line, "    ") && !strings.HasPrefix(line, "\t\t") && strings.TrimSpace(line) != "" {
+				break
+			}
+		}
+	}
+	return "", fmt.Errorf("remote %q not found in %s", name, configPath)
+}
+
+// lxdConfigDir returns the standard LXD client config directory.
+func lxdConfigDir() string {
+	if dir := os.Getenv("LXD_CONF"); dir != "" {
+		return dir
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join("/root", ".config", "lxc")
+	}
+	return filepath.Join(home, ".config", "lxc")
 }
 
 // CloneFromTemplate creates a new container by copying the stopped template.

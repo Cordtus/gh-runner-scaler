@@ -401,6 +401,32 @@ func TestScaleUp_WithCache(t *testing.T) {
 	}
 }
 
+func TestScaleDown_OrphanedContainer(t *testing.T) {
+	runtime := newMockRuntime()
+	runtime.containers["auto-1"] = domain.StatusRunning
+
+	ci := &mockCI{
+		// No runners match auto-1 -- it's orphaned.
+		runners:     []domain.Runner{{ID: 1, Name: "permanent", Busy: false, Status: "online"}},
+		removeToken: "remove-token",
+		prefix:      "auto",
+	}
+	state := newMockState()
+
+	r := newTestReconciler(runtime, ci, state, nil)
+
+	err := r.Reconcile(context.Background())
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if _, ok := runtime.containers["auto-1"]; ok {
+		t.Error("orphaned container should have been cleaned up")
+	}
+}
+
 func TestBuildSnapshot(t *testing.T) {
 	runners := []domain.Runner{
 		{ID: 1, Name: "permanent", Busy: true, Status: "online"},
