@@ -7,22 +7,26 @@ Single Go binary, interface-driven architecture. Every external dependency (LXD,
 ## Architecture
 
 ```
-cmd/scaler/main.go         -- composition root (only file importing providers)
+cmd/scaler/main.go            -- composition root (only file importing providers)
 internal/
-  iface/                   -- ContainerRuntime, CacheManager, CIProvider,
-                              MetricsBackend, StateStore interfaces
-  engine/                  -- scaling logic (depends only on interfaces)
-  daemon/                  -- goroutine orchestration, webhook server, metrics loop
-  domain/                  -- shared value types
-  config/                  -- TOML loader with env var overrides
+  iface/                      -- ContainerRuntime, CacheManager, CIProvider,
+                                 MetricsBackend, StateStore interfaces
+  engine/                     -- scaling logic (depends only on interfaces)
+  daemon/                     -- goroutine orchestration, webhook server, metrics loop
+  domain/                     -- shared value types
+  config/                     -- TOML loader with env var overrides
 provider/
-  lxd/                     -- ContainerRuntime + CacheManager via LXD API
-  github/                  -- CIProvider via go-github
-  loki/                    -- MetricsBackend via Loki HTTP push
-  fsstate/                 -- StateStore via filesystem timestamps
+  lxd/                        -- ContainerRuntime + CacheManager via LXD API
+  github/                     -- CIProvider via go-github
+  loki/                       -- MetricsBackend via Loki HTTP push
+  fsstate/                    -- StateStore via filesystem timestamps
+deploy/
+  systemd/gh-runner-scaler.service
+  grafana-dashboard.json
+config.example.toml
 ```
 
-Adding a provider: create a `provider/<name>/` package implementing the interface, add one `case` in `main.go`. Zero changes to `internal/`.
+Adding a provider: create a `provider/<name>/` package implementing the interface, add one `case` in `cmd/scaler/main.go`. Zero changes to `internal/`.
 
 ## Runner Lifecycle
 
@@ -90,7 +94,9 @@ lxc config set core.https_address :8443
 lxc remote add <name> <host>:8443
 ```
 
-The scaler reads the remote name from `container.lxd.remote` in `config.toml` and resolves the address + TLS certs from the standard LXD client config at `~/.config/lxc/`.
+Set `container.lxd.remote` in `config.toml` to the remote name (e.g. `"nodev2"`). The scaler resolves the address and TLS client certs from the standard LXD config at `~/.config/lxc/`.
+
+Alternatively, set `container.lxd.remote_url` directly and provide cert/key paths via `container.lxd.remote_cert` and `container.lxd.remote_key`.
 
 ### ZFS Storage Pools
 
@@ -202,65 +208,120 @@ GOOS=linux GOARCH=amd64 go build -o gh-runner-scaler ./cmd/scaler/
 
 ### Config File (TOML)
 
-Copy `config.example.toml` to `config.toml` and edit. Every setting has a sensible default except `ci.org` which must be set.
+Copy `config.example.toml` and edit. Every setting has a sensible default except `ci.org`.
 
 ```bash
 cp config.example.toml config.toml
 ```
 
-| Section | Key | Default | Description |
-|---------|-----|---------|-------------|
-| `scaler` | `prefix` | `gh-runner-auto` | Container name prefix |
-| `scaler` | `max_auto_runners` | `6` | Max ephemeral containers |
-| `scaler` | `idle_timeout` | `300s` | Idle time before teardown |
-| `scaler` | `poll_interval` | `30s` | Reconciler poll frequency |
-| `scaler` | `labels` | `self-hosted,linux,x64` | Runner labels |
-| `container` | `provider` | `lxd` | Container runtime module |
-| `container` | `template` | `gh-runner-template` | Stopped template to clone |
-| `container.lxd` | `remote` | (empty = local) | LXD remote name from `~/.config/lxc/` |
-| `cache` | `enabled` | `false` | Attach shared cache volume |
-| `cache` | `pool` | | ZFS pool for cache volume |
-| `cache` | `volume` | | ZFS volume name |
-| `ci` | `provider` | `github` | CI platform module |
-| `ci` | `org` | | GitHub org name |
-| `webhook` | `enabled` | `true` | Run webhook HTTP listener |
-| `webhook` | `port` | `9876` | Listen port |
-| `webhook` | `debounce` | `2s` | Collapse rapid events |
-| `webhook.sync_repos` | | | Repo -> cache path map for push-triggered syncs |
-| `metrics` | `enabled` | `true` | Push metrics to backend |
-| `metrics` | `interval` | `60s` | Collection interval |
-| `metrics` | `collect_workflows` | `true` | Include workflow run data |
-| `metrics` | `collect_host` | `true` | Include container/storage data |
-| `state` | `provider` | `filesystem` | State tracking module |
-| `state.filesystem` | `dir` | `.state` | Directory for timestamp files |
+#### Scaler
 
-### Secrets (Environment Variables)
+| Key | Default | Description |
+|-----|---------|-------------|
+| `prefix` | `gh-runner-auto` | Container name prefix for auto-scaled runners |
+| `max_auto_runners` | `6` | Max ephemeral containers |
+| `idle_timeout` | `300s` | Idle time before teardown |
+| `poll_interval` | `30s` | How often the reconciler checks state |
+| `labels` | `self-hosted,linux,x64` | Runner labels (comma-separated) |
+| `runner_work_dir` | `_work` | Working directory passed to `config.sh` |
 
-Secrets are **never** stored in the config file. Set them as environment variables.
+#### Container
 
-| Variable | Required | Purpose |
-|----------|----------|---------|
-| `GH_SCALER_GITHUB_TOKEN` | Y | GitHub PAT for runner management |
-| `GH_WEBHOOK_SECRET` | If webhook enabled | HMAC secret for webhook signature verification |
-| `LOKI_PUSH_URL` | If metrics enabled | Grafana Loki push endpoint |
-| `LOKI_USERNAME` | If metrics enabled | Loki instance ID |
-| `GRAFANA_CLOUD_API_KEY` | If metrics enabled | Loki write API key |
+| Key | Default | Description |
+|-----|---------|-------------|
+| `provider` | `lxd` | Container runtime module (`lxd`) |
+| `template` | `gh-runner-template` | Stopped template container to clone |
 
-### Cache Symlinks
+#### Container (LXD-specific): `[container.lxd]`
 
-When `cache.enabled = true`, the scaler mounts a shared ZFS volume at `/cache` in every ephemeral container and creates symlinks from standard tool paths. Configure via `[[cache.symlinks]]` entries:
+| Key | Default | Description |
+|-----|---------|-------------|
+| `socket` | (LXD default) | Unix socket path; empty uses LXD snap default |
+| `remote` | (empty = local) | Named LXD remote from `~/.config/lxc/config.yml` |
+| `remote_url` | | Direct HTTPS URL (alternative to named remote) |
+| `remote_cert` | | TLS client cert path (if not using standard LXD config) |
+| `remote_key` | | TLS client key path |
+
+#### Cache: `[cache]`
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enabled` | `false` | Attach shared ZFS cache volume to each runner |
+| `pool` | | ZFS storage pool name |
+| `volume` | | ZFS volume name |
+
+Symlinks are configured via `[[cache.symlinks]]` entries:
 
 ```toml
 [[cache.symlinks]]
 source = "/cache/npm"
 target = "/home/runner/.npm"
-
-[[cache.symlinks]]
-source = "/cache/tool-cache"
-target = "/opt/hostedtoolcache"
 ```
 
-This eliminates cold caches on every job without sacrificing ephemeral isolation.
+Each entry creates a symlink inside the container mapping `target` to `source` on the cache volume.
+
+#### CI: `[ci]`
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `provider` | `github` | CI platform module (`github`) |
+| `org` | (required) | GitHub organization name |
+
+GitHub-specific settings under `[ci.github]` are currently empty -- token and webhook secret are set via environment variables.
+
+#### Webhook: `[webhook]`
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enabled` | `true` | Run the webhook HTTP listener |
+| `port` | `9876` | Listen port |
+| `debounce` | `2s` | Collapse rapid events within this window |
+
+Push-to-main cache syncs are configured under `[webhook.sync_repos]`:
+
+```toml
+[webhook.sync_repos]
+"Org/repo-name" = "/cache/path"
+```
+
+When a push to `main` is received for a listed repo, the scaler execs `git fetch && git reset --hard` inside a running container at the given cache path.
+
+#### Metrics: `[metrics]`
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enabled` | `true` | Push metrics to backend |
+| `interval` | `60s` | Collection and push interval |
+| `collect_workflows` | `true` | Include recent workflow run durations and outcomes |
+| `collect_host` | `true` | Include container counts and storage pool usage |
+
+Loki-specific settings under `[metrics.loki]` are set via environment variables.
+
+#### State: `[state]`
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `provider` | `filesystem` | State tracking module (`filesystem`) |
+
+Filesystem-specific: `[state.filesystem]`
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `dir` | `.state` | Directory for per-container timestamp files |
+
+For production, use an absolute path like `/var/lib/gh-runner-scaler/state`.
+
+### Secrets (Environment Variables)
+
+Secrets are **never** stored in the config file. Set them as environment variables or in an env file read by systemd.
+
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `GH_SCALER_GITHUB_TOKEN` | Y | GitHub PAT for runner management |
+| `GH_WEBHOOK_SECRET` | If webhook enabled | HMAC secret for signature verification |
+| `LOKI_PUSH_URL` | If metrics enabled | Grafana Loki push endpoint |
+| `LOKI_USERNAME` | If metrics enabled | Loki instance ID |
+| `GRAFANA_CLOUD_API_KEY` | If metrics enabled | Loki write API key |
 
 ---
 
@@ -390,6 +451,8 @@ Import `deploy/grafana-dashboard.json` into Grafana. Requires a Loki datasource 
 
 **Idle timeout**: `idle_timeout = "300s"` balances warm-runner availability for bursty workloads against resource consumption.
 
-**Concurrency**: Reconciler, webhook, and metrics run as goroutines in one process. A channel-based trigger with `time.AfterFunc` debounce replaces the bash flock + systemd timer approach. `sync.Mutex` with `TryLock` prevents concurrent reconciles -- if one is running, the next trigger is skipped (correct because the running pass already sees the latest state).
+**Concurrency**: All three subsystems run as goroutines in one process. A channel-based trigger with `time.AfterFunc` debounce replaces the bash flock + systemd timer approach. `sync.Mutex` with `TryLock` prevents concurrent reconciles -- if one is running, the next trigger is skipped (correct because the running pass already sees the latest state).
 
 **Orphan detection**: Containers matching the auto-scale prefix but with no registered GitHub runner are cleaned up immediately. This catches containers left behind by crashed scalers, failed `config.sh`, or manual intervention.
+
+**MAC handling**: When cloning the template, the scaler clears inherited `volatile.*.hwaddr` entries so LXD assigns a fresh MAC address. Without this, clones fail to start due to MAC collisions.
