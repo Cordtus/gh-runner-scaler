@@ -185,6 +185,26 @@ func (r *Runtime) CloneFromTemplate(ctx context.Context, name string) error {
 	if err := op.Wait(); err != nil {
 		return fmt.Errorf("waiting for copy of %s: %w", name, err)
 	}
+
+	// Clear the inherited MAC address so LXD generates a fresh one.
+	// Without this, the clone has the same hwaddr as the template and
+	// LXD refuses to start it ("MAC address already defined on another NIC").
+	inst, etag, err := r.server.GetInstance(name)
+	if err != nil {
+		return fmt.Errorf("getting cloned instance %s: %w", name, err)
+	}
+	if eth0, ok := inst.Devices["eth0"]; ok {
+		delete(eth0, "hwaddr")
+		inst.Devices["eth0"] = eth0
+		updateOp, err := r.server.UpdateInstance(name, inst.Writable(), etag)
+		if err != nil {
+			return fmt.Errorf("clearing MAC on %s: %w", name, err)
+		}
+		if err := updateOp.WaitContext(ctx); err != nil {
+			return fmt.Errorf("waiting for MAC clear on %s: %w", name, err)
+		}
+	}
+
 	return nil
 }
 
