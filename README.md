@@ -266,63 +266,97 @@ This eliminates cold caches on every job without sacrificing ephemeral isolation
 
 ## Deploy
 
-### Systemd (recommended)
+### 1. Install binary and config
 
 ```bash
-# Copy binary
 sudo cp gh-runner-scaler /usr/local/bin/
+sudo mkdir -p /etc/gh-runner-scaler /var/lib/gh-runner-scaler/state
+sudo cp config.toml /etc/gh-runner-scaler/config.toml
+```
 
-# Copy config
-sudo mkdir -p /etc/gh-runner-scaler
-sudo cp config.toml /etc/gh-runner-scaler/
+### 2. Create the secrets env file
 
-# Install service unit
+```bash
+sudo tee /etc/gh-runner-scaler/env > /dev/null << 'EOF'
+GH_SCALER_GITHUB_TOKEN=ghp_...
+GH_WEBHOOK_SECRET=your-webhook-secret
+LOKI_PUSH_URL=https://logs-prod-XXX.grafana.net/loki/api/v1/push
+LOKI_USERNAME=your-loki-instance-id
+GRAFANA_CLOUD_API_KEY=glc_...
+EOF
+sudo chmod 600 /etc/gh-runner-scaler/env
+```
+
+### 3. Install systemd unit
+
+```bash
 sudo cp systemd/gh-runner-scaler.service /etc/systemd/system/
-
-# Set secrets via systemd override
-sudo systemctl edit gh-runner-scaler
 ```
 
-In the override editor, add:
+The unit reads secrets from `/etc/gh-runner-scaler/env` via `EnvironmentFile=`.
 
-```ini
-[Service]
-Environment=GH_SCALER_GITHUB_TOKEN=ghp_...
-Environment=GH_WEBHOOK_SECRET=...
-Environment=LOKI_PUSH_URL=https://...
-Environment=LOKI_USERNAME=...
-Environment=GRAFANA_CLOUD_API_KEY=glc_...
+### 4. Remove old services (if upgrading from bash/python version)
+
+```bash
+sudo systemctl disable --now gh-runner-scaler.timer 2>/dev/null
+sudo systemctl disable --now gh-runner-webhook.service 2>/dev/null
+sudo systemctl disable --now gh-runner-metrics.timer 2>/dev/null
+sudo systemctl disable --now gh-runner-ui-sync.timer 2>/dev/null
+sudo rm -f /etc/systemd/system/gh-runner-scaler.timer
+sudo rm -f /etc/systemd/system/gh-runner-webhook.service
+sudo rm -f /etc/systemd/system/gh-runner-metrics.service
+sudo rm -f /etc/systemd/system/gh-runner-metrics.timer
+sudo rm -f /etc/systemd/system/gh-runner-ui-sync.service
+sudo rm -f /etc/systemd/system/gh-runner-ui-sync.timer
 ```
 
-Then start:
+### 5. Start
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now gh-runner-scaler
+sudo systemctl enable --now gh-runner-scaler.service
+```
+
+### 6. Verify
+
+```bash
+sudo systemctl status gh-runner-scaler
 journalctl -u gh-runner-scaler -f
 ```
 
-### Manual / testing
+Expected output on a healthy start:
 
-Source secrets from an env file and run directly:
-
-```bash
-set -a; source .env; set +a
-sudo -E ./gh-runner-scaler daemon --config config.toml
+```
+level=INFO msg="daemon started" poll_interval=30s webhook=true metrics=true
+level=INFO msg="webhook server listening" addr=:9876
+level=INFO msg="runner state" total=1 busy=0 idle=1 auto=0 permanent=1
 ```
 
 ### One-shot test
 
-Verify connectivity before enabling the daemon:
+Verify LXD and GitHub connectivity before enabling the daemon:
 
 ```bash
-sudo -E ./gh-runner-scaler reconcile --config config.toml
+sudo -E ./gh-runner-scaler reconcile --config /etc/gh-runner-scaler/config.toml
 ```
 
-This runs a single reconcile pass and exits. Expected output:
+### Manual / foreground run
+
+For debugging, run the daemon in the foreground:
+
+```bash
+set -a; source /etc/gh-runner-scaler/env; set +a
+sudo -E /usr/local/bin/gh-runner-scaler daemon --config /etc/gh-runner-scaler/config.toml
+```
+
+### File layout after install
 
 ```
-level=INFO msg="runner state" total=1 busy=0 idle=1 auto=0 permanent=1
+/usr/local/bin/gh-runner-scaler          -- binary
+/etc/gh-runner-scaler/config.toml        -- configuration
+/etc/gh-runner-scaler/env                -- secrets (mode 600)
+/etc/systemd/system/gh-runner-scaler.service -- systemd unit
+/var/lib/gh-runner-scaler/state/         -- container state files
 ```
 
 ---

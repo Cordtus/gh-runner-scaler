@@ -6,11 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/gh-runner-scaler daemon --config /etc/gh-runner-scaler/config.toml
-Environment=GH_SCALER_GITHUB_TOKEN=
-Environment=GH_WEBHOOK_SECRET=
-Environment=LOKI_PUSH_URL=
-Environment=LOKI_USERNAME=
-Environment=GRAFANA_CLOUD_API_KEY=
+EnvironmentFile=/etc/gh-runner-scaler/env
 Restart=on-failure
 RestartSec=5
 User=root
