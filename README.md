@@ -32,190 +32,300 @@ clone template -> start -> wait for boot (90s max)
   -> [runs one job] -> container stops -> scaler cleanup
 ```
 
-Scale-down handles three cases: stopped ephemeral containers (immediate), idle runners past `idle_timeout`, and orphaned containers. Deregistration is belt-and-suspenders: `config.sh remove` followed by an API DELETE.
+**Scale-down** handles four cases in priority order:
 
-The webhook is the primary event driver. When GitHub fires a `workflow_job.queued` event, the scaler runs within 2 seconds (debounced to collapse concurrent bursts). Push events to tracked repos trigger cache volume syncs via `lxc exec` on a running container.
+1. Stopped containers -- ephemeral job complete, immediate cleanup
+2. Running containers with no registered runner -- orphaned, immediate cleanup
+3. Running, registered, busy -- refresh last-active timestamp
+4. Running, registered, idle past `idle_timeout` -- teardown
 
-## Host Environment Setup
+Deregistration is belt-and-suspenders: `config.sh remove` followed by a GitHub API DELETE.
 
-The scaler binary is statically compiled with no runtime dependencies, but the host it runs on needs LXD, storage, and a runner template container configured before first use.
+**Webhook** is the primary event driver. `workflow_job.queued` triggers the scaler within 2 seconds (debounced). `push` events to tracked repos trigger cache volume syncs via `lxc exec` on a running container.
 
-### 1. LXD
+**Poll loop** runs every `poll_interval` as a safety net in case a webhook is missed.
 
-Install and initialize LXD. The `init` wizard sets up storage pools and networking.
+---
+
+## Environment Prerequisites
+
+The binary is statically compiled with no runtime dependencies. The host needs:
+
+| Dependency | Required | Purpose |
+|------------|----------|---------|
+| LXD (snap) | Y | Container runtime |
+| ZFS | Y | Fast same-pool clones for scale-up |
+| GitHub classic PAT | Y | Runner management, webhook events |
+| Network access from GitHub | If webhook enabled | Receives `workflow_job` and `push` events |
+| Grafana Cloud (Loki) | If metrics enabled | Dashboard visualization |
+
+### LXD
 
 ```bash
 sudo snap install lxd
 sudo lxd init
 ```
 
-During `lxd init`, the relevant choices:
+The `lxd init` wizard configures storage and networking. Key choices:
 
-- **Storage backend**: ZFS is required for fast same-pool clones. If the host already has ZFS pools, select "use existing" and point LXD at one. Otherwise, let the wizard create a new pool.
-- **Network bridge**: Accept the default `lxdbr0` unless you need a specific network layout.
-- **Clustering**: Not required. Single-node is fine.
+- **Storage backend**: Select ZFS. If the host has existing ZFS pools, point LXD at one. Otherwise let the wizard create a pool.
+- **Network bridge**: Accept default `lxdbr0` unless your network requires otherwise.
+- **Clustering**: Not required.
 
-Verify LXD is working:
+Verify:
 
 ```bash
 lxc list
 ```
 
-If running the scaler on a different machine than LXD, configure a remote:
+#### Remote LXD (optional)
+
+If the scaler runs on a different machine than LXD:
 
 ```bash
-# On the LXD host: expose the API
+# On the LXD host
 lxc config set core.https_address :8443
-lxc config trust add <client-cert>
 
-# On the scaler machine: add the remote
+# On the scaler machine
 lxc remote add <name> <host>:8443
 ```
 
-Then set `container.lxd.remote` and `container.lxd.remote_url` in `config.toml`.
+The scaler reads the remote name from `container.lxd.remote` in `config.toml` and resolves the address + TLS certs from the standard LXD client config at `~/.config/lxc/`.
 
-### 2. Storage Pools
+### ZFS Storage Pools
 
-The scaler clones containers via ZFS. Same-pool clones are metadata-only (~0.4s); cross-pool copies require full data transfer (~14s). The template container and its clones **must live on the same pool**.
-
-If you need to create a pool manually:
+Same-pool ZFS clones are metadata-only (~0.4s). Cross-pool copies require full data transfer (~14s). The template and its clones **must share a pool**.
 
 ```bash
-# ZFS on a block device
-sudo zpool create <pool-name> <device>       # single disk
-sudo zpool create <pool-name> raidz <dev1> <dev2> <dev3> <dev4>  # RAIDZ1
+# Create a pool if needed
+sudo zpool create <pool-name> <device>
+sudo zpool create <pool-name> raidz <dev1> <dev2> <dev3> <dev4>
 
-# Register it with LXD
+# Register with LXD
 lxc storage create <pool-name> zfs source=<pool-name>
 ```
 
-For the persistent cache volume (optional), a separate NVMe pool works well since cache workloads favor sequential write throughput over clone speed:
+For the persistent cache volume (optional), a separate NVMe pool works well:
 
 ```bash
 lxc storage volume create <cache-pool> <cache-volume>
 ```
 
-### 3. Template Container
+### Template Container
 
-The template is a stopped LXC container with the GitHub Actions runner software pre-installed. Every ephemeral runner is cloned from it.
+A stopped LXC container with the GitHub Actions runner software pre-installed. Every ephemeral runner is cloned from it.
 
 ```bash
-# Launch a base container
 lxc launch ubuntu:24.04 gh-runner-template
-
-# Enter it
 lxc exec gh-runner-template -- bash
+```
 
-# Inside the container: install runner prerequisites
+Inside the container:
+
+```bash
+# Base dependencies
 apt-get update && apt-get install -y curl git jq build-essential
 
-# Download and extract the runner (check github.com/actions/runner/releases for latest)
+# Runner software (check github.com/actions/runner/releases for latest)
 mkdir -p /home/runner && cd /home/runner
-curl -o actions-runner.tar.gz -L https://github.com/actions/runner/releases/download/v2.323.0/actions-runner-linux-x64-2.323.0.tar.gz
+curl -o actions-runner.tar.gz -L \
+  https://github.com/actions/runner/releases/download/v2.323.0/actions-runner-linux-x64-2.323.0.tar.gz
 tar xzf actions-runner.tar.gz && rm actions-runner.tar.gz
 ./bin/installdependencies.sh
 
-# Create the runner user and fix ownership
+# Runner user
 useradd -m -d /home/runner -s /bin/bash runner
 chown -R runner:runner /home/runner
 
-# Install any additional tools your workflows need (node, python, etc.)
-# ...
+# Install additional tools your workflows need (node, python, etc.)
+```
 
-# Exit and stop the container
+Then exit and stop:
+
+```bash
 exit
 lxc stop gh-runner-template
 ```
 
-Verify the template is stopped and on the correct storage pool:
+Do **not** run `config.sh` on the template -- each ephemeral clone configures itself with a fresh registration token.
 
-```bash
-lxc list gh-runner-template
-lxc storage volume list <pool-name> | grep gh-runner-template
-```
+### GitHub PAT
 
-Do **not** run `config.sh` on the template -- each ephemeral clone configures itself at boot with a fresh registration token.
+Create a classic Personal Access Token at https://github.com/settings/tokens:
 
-### 4. GitHub PAT
+| Scope | Purpose |
+|-------|---------|
+| `repo` | Read workflow job status |
+| `manage_runners:org` | Register and deregister runners |
+| `admin:org_hook` | Create org webhooks (initial setup only) |
 
-Create a classic Personal Access Token at https://github.com/settings/tokens with these scopes:
+### Webhook Network Access
 
-- `repo` -- read workflow job status
-- `manage_runners:org` -- register/deregister runners
-- `admin:org_hook` -- create org webhooks (only needed for initial webhook setup)
+The host must be reachable from GitHub on the webhook port (default 9876).
 
-### 5. Grafana Cloud (optional)
+Options:
+- Direct port exposure (host has a public IP or port forward)
+- Reverse proxy (nginx, caddy) with TLS termination
+- Tunnel (Cloudflare Tunnel, ngrok, etc.)
 
-If using metrics, create a Grafana Cloud API key with Loki write access. You need:
+GitHub publishes webhook source IPs via the [meta API](https://api.github.com/meta) under the `hooks` key.
 
-- **Push URL**: e.g. `https://logs-prod-042.grafana.net/loki/api/v1/push`
-- **Username**: your Grafana Cloud Loki instance ID
-- **API key**: a cloud API key or service account token with write permissions
+### Grafana Cloud (optional)
 
-### 6. Webhook Network Access
+For the metrics + dashboard integration:
 
-The host must be reachable from GitHub's webhook IPs on the configured port (default 9876). Options:
+| Value | Source |
+|-------|--------|
+| Loki push URL | Grafana Cloud > your stack > Loki > Details |
+| Loki username | Instance ID shown on the same page |
+| API key | Grafana Cloud > API Keys > create with Loki write scope |
 
-- Direct port exposure if the host has a public IP
-- Reverse proxy (nginx/caddy) with TLS termination
-- Cloudflare Tunnel or similar
-
-GitHub publishes its webhook IP ranges via the [meta API](https://api.github.com/meta) under the `hooks` key.
+---
 
 ## Build
+
+Requires Go 1.23+.
 
 ```bash
 go build -o gh-runner-scaler ./cmd/scaler/
 ```
 
-Requires Go 1.23+. The output is a statically linked binary -- copy it to the target host.
-
-Cross-compile for a different architecture:
+Cross-compile:
 
 ```bash
 GOOS=linux GOARCH=amd64 go build -o gh-runner-scaler ./cmd/scaler/
 ```
 
-## Deploy
+---
+
+## Configuration
+
+### Config File (TOML)
+
+Copy `config.example.toml` to `config.toml` and edit. Every setting has a sensible default except `ci.org` which must be set.
 
 ```bash
-# 1. Copy binary and config
-sudo cp gh-runner-scaler /usr/local/bin/
-sudo mkdir -p /etc/gh-runner-scaler
 cp config.example.toml config.toml
-# Edit config.toml -- set org, template, cache settings, etc.
+```
+
+| Section | Key | Default | Description |
+|---------|-----|---------|-------------|
+| `scaler` | `prefix` | `gh-runner-auto` | Container name prefix |
+| `scaler` | `max_auto_runners` | `6` | Max ephemeral containers |
+| `scaler` | `idle_timeout` | `300s` | Idle time before teardown |
+| `scaler` | `poll_interval` | `30s` | Reconciler poll frequency |
+| `scaler` | `labels` | `self-hosted,linux,x64` | Runner labels |
+| `container` | `provider` | `lxd` | Container runtime module |
+| `container` | `template` | `gh-runner-template` | Stopped template to clone |
+| `container.lxd` | `remote` | (empty = local) | LXD remote name from `~/.config/lxc/` |
+| `cache` | `enabled` | `false` | Attach shared cache volume |
+| `cache` | `pool` | | ZFS pool for cache volume |
+| `cache` | `volume` | | ZFS volume name |
+| `ci` | `provider` | `github` | CI platform module |
+| `ci` | `org` | | GitHub org name |
+| `webhook` | `enabled` | `true` | Run webhook HTTP listener |
+| `webhook` | `port` | `9876` | Listen port |
+| `webhook` | `debounce` | `2s` | Collapse rapid events |
+| `webhook.sync_repos` | | | Repo -> cache path map for push-triggered syncs |
+| `metrics` | `enabled` | `true` | Push metrics to backend |
+| `metrics` | `interval` | `60s` | Collection interval |
+| `metrics` | `collect_workflows` | `true` | Include workflow run data |
+| `metrics` | `collect_host` | `true` | Include container/storage data |
+| `state` | `provider` | `filesystem` | State tracking module |
+| `state.filesystem` | `dir` | `.state` | Directory for timestamp files |
+
+### Secrets (Environment Variables)
+
+Secrets are **never** stored in the config file. Set them as environment variables.
+
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `GH_SCALER_GITHUB_TOKEN` | Y | GitHub PAT for runner management |
+| `GH_WEBHOOK_SECRET` | If webhook enabled | HMAC secret for webhook signature verification |
+| `LOKI_PUSH_URL` | If metrics enabled | Grafana Loki push endpoint |
+| `LOKI_USERNAME` | If metrics enabled | Loki instance ID |
+| `GRAFANA_CLOUD_API_KEY` | If metrics enabled | Loki write API key |
+
+### Cache Symlinks
+
+When `cache.enabled = true`, the scaler mounts a shared ZFS volume at `/cache` in every ephemeral container and creates symlinks from standard tool paths. Configure via `[[cache.symlinks]]` entries:
+
+```toml
+[[cache.symlinks]]
+source = "/cache/npm"
+target = "/home/runner/.npm"
+
+[[cache.symlinks]]
+source = "/cache/tool-cache"
+target = "/opt/hostedtoolcache"
+```
+
+This eliminates cold caches on every job without sacrificing ephemeral isolation.
+
+---
+
+## Deploy
+
+### Systemd (recommended)
+
+```bash
+# Copy binary
+sudo cp gh-runner-scaler /usr/local/bin/
+
+# Copy config
+sudo mkdir -p /etc/gh-runner-scaler
 sudo cp config.toml /etc/gh-runner-scaler/
 
-# 2. Install systemd unit
+# Install service unit
 sudo cp systemd/gh-runner-scaler.service /etc/systemd/system/
 
-# 3. Set secrets
+# Set secrets via systemd override
 sudo systemctl edit gh-runner-scaler
-# In the override file, add:
-#   [Service]
-#   Environment=GH_SCALER_GITHUB_TOKEN=ghp_...
-#   Environment=GH_WEBHOOK_SECRET=your-secret
-#   Environment=LOKI_PUSH_URL=https://...
-#   Environment=LOKI_USERNAME=...
-#   Environment=GRAFANA_CLOUD_API_KEY=glc_...
+```
 
-# 4. Start
+In the override editor, add:
+
+```ini
+[Service]
+Environment=GH_SCALER_GITHUB_TOKEN=ghp_...
+Environment=GH_WEBHOOK_SECRET=...
+Environment=LOKI_PUSH_URL=https://...
+Environment=LOKI_USERNAME=...
+Environment=GRAFANA_CLOUD_API_KEY=glc_...
+```
+
+Then start:
+
+```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now gh-runner-scaler
-
-# 5. Verify
 journalctl -u gh-runner-scaler -f
+```
+
+### Manual / testing
+
+Source secrets from an env file and run directly:
+
+```bash
+set -a; source .env; set +a
+sudo -E ./gh-runner-scaler daemon --config config.toml
 ```
 
 ### One-shot test
 
-Before enabling the daemon, verify the scaler can talk to LXD and GitHub:
+Verify connectivity before enabling the daemon:
 
 ```bash
-sudo GH_SCALER_GITHUB_TOKEN=ghp_... ./gh-runner-scaler reconcile --config config.toml
+sudo -E ./gh-runner-scaler reconcile --config config.toml
 ```
 
-This runs a single scale check and exits. It should log the current runner state without errors.
+This runs a single reconcile pass and exits. Expected output:
+
+```
+level=INFO msg="runner state" total=1 busy=0 idle=1 auto=0 permanent=1
+```
+
+---
 
 ## CLI
 
@@ -225,56 +335,27 @@ gh-runner-scaler reconcile   # one-shot scale check
 gh-runner-scaler version     # print version
 ```
 
-Both `daemon` and `reconcile` accept `--config <path>` (default: `config.toml`).
+`daemon` and `reconcile` accept `--config <path>` (default: `config.toml`).
 
-## Configuration
-
-TOML config with env var overrides for secrets. See `config.example.toml` for all options.
-
-| Section | Key | Default | Description |
-|---------|-----|---------|-------------|
-| `scaler` | `prefix` | `gh-runner-auto` | Container name prefix for auto-scaled runners |
-| `scaler` | `max_auto_runners` | `6` | Cap on ephemeral containers |
-| `scaler` | `idle_timeout` | `300s` | Time before idle runner teardown |
-| `scaler` | `poll_interval` | `30s` | Reconciler poll frequency (webhook bypasses this) |
-| `scaler` | `labels` | `self-hosted,linux,x64` | Runner labels |
-| `container` | `provider` | `lxd` | Container runtime module |
-| `container` | `template` | `gh-runner-template` | Stopped LXC template to clone |
-| `cache` | `enabled` | `false` | Mount shared cache volume |
-| `cache` | `pool` / `volume` | | ZFS pool and volume for cache |
-| `ci` | `provider` | `github` | CI platform module |
-| `ci` | `org` | | GitHub org name |
-| `webhook` | `enabled` | `true` | Run webhook HTTP listener |
-| `webhook` | `port` | `9876` | Listen port |
-| `webhook.sync_repos` | | | Map of repo -> cache path for push-triggered syncs |
-| `metrics` | `enabled` | `true` | Push metrics to backend |
-| `metrics` | `interval` | `60s` | Metrics collection interval |
-| `state` | `provider` | `filesystem` | State tracking module |
-
-**Secrets** (env vars, not in config file): `GH_SCALER_GITHUB_TOKEN`, `GH_WEBHOOK_SECRET`, `LOKI_PUSH_URL`, `LOKI_USERNAME`, `GRAFANA_CLOUD_API_KEY`.
-
-## Persistent Cache
-
-When `cache.enabled = true`, the scaler attaches a shared ZFS volume to every ephemeral container at `/cache` and creates symlinks mapping standard tool paths into the volume:
-
-```
-/cache/npm         -> ~/.npm
-/cache/yarn        -> ~/.cache/yarn
-/cache/pip         -> ~/.cache/pip
-/cache/tool-cache  -> /opt/hostedtoolcache
-/cache/axionic-ui  -> /opt/axionic-ui
-```
-
-Symlinks are configurable via `[[cache.symlinks]]` entries in the TOML config.
+---
 
 ## Grafana Dashboard
 
-Import `grafana-dashboard.json` into Grafana. Requires a Loki datasource. The dashboard shows runner pool state, utilization trends, workflow run durations/outcomes, and host metrics.
+Import `grafana-dashboard.json` into Grafana. Requires a Loki datasource receiving metrics from the scaler. Shows:
+
+- Runner pool state (total, busy, idle, auto-scaled)
+- Utilization over time
+- Workflow run durations and outcomes
+- Container counts and storage pool usage
+
+---
 
 ## Design Notes
 
-The template container lives on a ZFS RAIDZ1 pool. Same-pool ZFS clones are metadata-only operations (~0.4s) compared to cross-pool copies (~14s), so keeping the template co-located with the runner pool is critical for scale-up latency. NVMe pools are better suited for the persistent cache volume where sequential write throughput matters more than clone speed.
+**ZFS cloning**: The template lives on a ZFS pool. Same-pool clones are metadata-only (~0.4s) vs cross-pool copies (~14s). Template and runners must share a pool. NVMe pools suit the persistent cache volume where sequential write throughput matters more.
 
-The 5-minute idle timeout (`idle_timeout = "300s"`) balances keeping warm runners available for bursty workloads against resource consumption. The webhook provides sub-second scale-up response for queued jobs regardless of the poll interval.
+**Idle timeout**: `idle_timeout = "300s"` balances warm-runner availability for bursty workloads against resource consumption.
 
-All three subsystems (reconciler, webhook, metrics) run as goroutines in a single process, coordinated by context cancellation and a channel-based trigger mechanism. A mutex with TryLock replaces flock -- if a reconcile is already running when a second trigger arrives, the second is skipped.
+**Concurrency**: Reconciler, webhook, and metrics run as goroutines in one process. A channel-based trigger with `time.AfterFunc` debounce replaces the bash flock + systemd timer approach. `sync.Mutex` with `TryLock` prevents concurrent reconciles -- if one is running, the next trigger is skipped (correct because the running pass already sees the latest state).
+
+**Orphan detection**: Containers matching the auto-scale prefix but with no registered GitHub runner are cleaned up immediately. This catches containers left behind by crashed scalers, failed `config.sh`, or manual intervention.
