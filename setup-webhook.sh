@@ -24,7 +24,7 @@ curl -sf -X POST \
 {
   "name": "web",
   "active": true,
-  "events": ["workflow_job"],
+  "events": ["workflow_job", "push"],
   "config": {
     "url": "$WEBHOOK_URL",
     "content_type": "json",

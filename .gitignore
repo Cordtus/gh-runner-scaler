@@ -1,4 +1,5 @@
 config
+config.toml
 .env
 .state/
 .scaler.lock
@@ -7,3 +8,4 @@ __pycache__/
 CLAUDE.md
 .claude/
 docs/
+scaler

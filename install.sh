@@ -36,7 +36,6 @@ fi
 
 # Make scripts executable
 chmod +x "$SCRIPT_DIR/gh-runner-scaler.sh"
-chmod +x "$SCRIPT_DIR/sync-axionic-ui.sh"
 
 # Create state directory
 mkdir -p /var/lib/gh-runner-scaler
@@ -44,15 +43,18 @@ mkdir -p /var/lib/gh-runner-scaler
 # Install systemd units
 cp "$SCRIPT_DIR/gh-runner-scaler.service" /etc/systemd/system/
 cp "$SCRIPT_DIR/gh-runner-scaler.timer" /etc/systemd/system/
-cp "$SCRIPT_DIR/gh-runner-ui-sync.service" /etc/systemd/system/
-cp "$SCRIPT_DIR/gh-runner-ui-sync.timer" /etc/systemd/system/
+cp "$SCRIPT_DIR/gh-runner-webhook.service" /etc/systemd/system/
+cp "$SCRIPT_DIR/gh-runner-metrics.service" /etc/systemd/system/
+cp "$SCRIPT_DIR/gh-runner-metrics.timer" /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now gh-runner-scaler.timer
-systemctl enable --now gh-runner-ui-sync.timer
+systemctl enable --now gh-runner-webhook.service
+systemctl enable --now gh-runner-metrics.timer
 
 echo ""
 echo "Installed and started. Check status:"
-echo "  systemctl status gh-runner-scaler.timer"
+echo "  systemctl list-timers gh-runner-*"
+echo "  systemctl status gh-runner-webhook.service"
 echo "  journalctl -u gh-runner-scaler.service -f"
 echo ""
 echo "Manual test run:"

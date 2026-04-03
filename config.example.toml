@@ -1,0 +1,80 @@
+# gh-runner-scaler configuration
+# Secrets are set via environment variables (see systemd unit), not in this file.
+
+[scaler]
+prefix = "gh-runner-auto"
+max_auto_runners = 6
+idle_timeout = "300s"
+poll_interval = "30s"
+labels = "self-hosted,linux,x64"
+runner_work_dir = "_work"
+
+[container]
+provider = "lxd"               # future: "docker", "gce", etc.
+template = "gh-runner-template"
+
+[container.lxd]
+socket = ""                    # empty = default LXD socket
+remote = ""                    # empty = local; e.g. "nodev2" for remote host
+# remote_url = ""              # HTTPS remote URL
+# remote_cert = ""             # client certificate path
+# remote_key = ""              # client key path
+
+[cache]
+enabled = false
+pool = ""                      # ZFS pool name (e.g. "pool9")
+volume = ""                    # ZFS volume name (e.g. "runner-cache")
+
+[[cache.symlinks]]
+source = "/cache/npm"
+target = "/home/runner/.npm"
+
+[[cache.symlinks]]
+source = "/cache/yarn"
+target = "/home/runner/.cache/yarn"
+
+[[cache.symlinks]]
+source = "/cache/pip"
+target = "/home/runner/.cache/pip"
+
+[[cache.symlinks]]
+source = "/cache/tool-cache"
+target = "/opt/hostedtoolcache"
+
+[[cache.symlinks]]
+source = "/cache/axionic-ui"
+target = "/opt/axionic-ui"
+
+[ci]
+provider = "github"            # future: "gitlab", etc.
+org = "Axionic-Labs"
+# Token: set GH_SCALER_GITHUB_TOKEN env var
+# Required scopes: repo, manage_runners:org, admin:org_hook
+
+[ci.github]
+# Webhook secret: set GH_WEBHOOK_SECRET env var
+
+[webhook]
+enabled = true
+port = 9876
+debounce = "2s"
+
+[webhook.sync_repos]
+# Push-to-main triggers cache sync for these repos.
+# Key = repo full name, value = path on cache volume.
+"Axionic-Labs/axionic-ui" = "/cache/axionic-ui"
+
+[metrics]
+enabled = true
+interval = "60s"
+collect_workflows = true
+collect_host = true
+
+[metrics.loki]
+# Set via env: LOKI_PUSH_URL, LOKI_USERNAME, GRAFANA_CLOUD_API_KEY
+
+[state]
+provider = "filesystem"        # future: "supabase", "redis", etc.
+
+[state.filesystem]
+dir = ".state"
