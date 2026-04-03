@@ -36,12 +36,131 @@ Scale-down handles three cases: stopped ephemeral containers (immediate), idle r
 
 The webhook is the primary event driver. When GitHub fires a `workflow_job.queued` event, the scaler runs within 2 seconds (debounced to collapse concurrent bursts). Push events to tracked repos trigger cache volume syncs via `lxc exec` on a running container.
 
-## Prerequisites
+## Host Environment Setup
 
-- LXC/LXD (snap install)
-- Go 1.23+ (build only)
-- A stopped LXC container with the GitHub Actions runner software installed (the template)
-- GitHub classic PAT with `repo`, `manage_runners:org`, and `admin:org_hook` scopes
+The scaler binary is statically compiled with no runtime dependencies, but the host it runs on needs LXD, storage, and a runner template container configured before first use.
+
+### 1. LXD
+
+Install and initialize LXD. The `init` wizard sets up storage pools and networking.
+
+```bash
+sudo snap install lxd
+sudo lxd init
+```
+
+During `lxd init`, the relevant choices:
+
+- **Storage backend**: ZFS is required for fast same-pool clones. If the host already has ZFS pools, select "use existing" and point LXD at one. Otherwise, let the wizard create a new pool.
+- **Network bridge**: Accept the default `lxdbr0` unless you need a specific network layout.
+- **Clustering**: Not required. Single-node is fine.
+
+Verify LXD is working:
+
+```bash
+lxc list
+```
+
+If running the scaler on a different machine than LXD, configure a remote:
+
+```bash
+# On the LXD host: expose the API
+lxc config set core.https_address :8443
+lxc config trust add <client-cert>
+
+# On the scaler machine: add the remote
+lxc remote add <name> <host>:8443
+```
+
+Then set `container.lxd.remote` and `container.lxd.remote_url` in `config.toml`.
+
+### 2. Storage Pools
+
+The scaler clones containers via ZFS. Same-pool clones are metadata-only (~0.4s); cross-pool copies require full data transfer (~14s). The template container and its clones **must live on the same pool**.
+
+If you need to create a pool manually:
+
+```bash
+# ZFS on a block device
+sudo zpool create <pool-name> <device>       # single disk
+sudo zpool create <pool-name> raidz <dev1> <dev2> <dev3> <dev4>  # RAIDZ1
+
+# Register it with LXD
+lxc storage create <pool-name> zfs source=<pool-name>
+```
+
+For the persistent cache volume (optional), a separate NVMe pool works well since cache workloads favor sequential write throughput over clone speed:
+
+```bash
+lxc storage volume create <cache-pool> <cache-volume>
+```
+
+### 3. Template Container
+
+The template is a stopped LXC container with the GitHub Actions runner software pre-installed. Every ephemeral runner is cloned from it.
+
+```bash
+# Launch a base container
+lxc launch ubuntu:24.04 gh-runner-template
+
+# Enter it
+lxc exec gh-runner-template -- bash
+
+# Inside the container: install runner prerequisites
+apt-get update && apt-get install -y curl git jq build-essential
+
+# Download and extract the runner (check github.com/actions/runner/releases for latest)
+mkdir -p /home/runner && cd /home/runner
+curl -o actions-runner.tar.gz -L https://github.com/actions/runner/releases/download/v2.323.0/actions-runner-linux-x64-2.323.0.tar.gz
+tar xzf actions-runner.tar.gz && rm actions-runner.tar.gz
+./bin/installdependencies.sh
+
+# Create the runner user and fix ownership
+useradd -m -d /home/runner -s /bin/bash runner
+chown -R runner:runner /home/runner
+
+# Install any additional tools your workflows need (node, python, etc.)
+# ...
+
+# Exit and stop the container
+exit
+lxc stop gh-runner-template
+```
+
+Verify the template is stopped and on the correct storage pool:
+
+```bash
+lxc list gh-runner-template
+lxc storage volume list <pool-name> | grep gh-runner-template
+```
+
+Do **not** run `config.sh` on the template -- each ephemeral clone configures itself at boot with a fresh registration token.
+
+### 4. GitHub PAT
+
+Create a classic Personal Access Token at https://github.com/settings/tokens with these scopes:
+
+- `repo` -- read workflow job status
+- `manage_runners:org` -- register/deregister runners
+- `admin:org_hook` -- create org webhooks (only needed for initial webhook setup)
+
+### 5. Grafana Cloud (optional)
+
+If using metrics, create a Grafana Cloud API key with Loki write access. You need:
+
+- **Push URL**: e.g. `https://logs-prod-042.grafana.net/loki/api/v1/push`
+- **Username**: your Grafana Cloud Loki instance ID
+- **API key**: a cloud API key or service account token with write permissions
+
+### 6. Webhook Network Access
+
+The host must be reachable from GitHub's webhook IPs on the configured port (default 9876). Options:
+
+- Direct port exposure if the host has a public IP
+- Reverse proxy (nginx/caddy) with TLS termination
+- Cloudflare Tunnel or similar
+
+GitHub publishes its webhook IP ranges via the [meta API](https://api.github.com/meta) under the `hooks` key.
 
 ## Build
 
@@ -49,27 +168,54 @@ The webhook is the primary event driver. When GitHub fires a `workflow_job.queue
 go build -o gh-runner-scaler ./cmd/scaler/
 ```
 
-## Setup
+Requires Go 1.23+. The output is a statically linked binary -- copy it to the target host.
+
+Cross-compile for a different architecture:
 
 ```bash
-# 1. Create config from template
-cp config.example.toml config.toml
-# Edit config.toml -- set org, template, cache settings
+GOOS=linux GOARCH=amd64 go build -o gh-runner-scaler ./cmd/scaler/
+```
 
-# 2. Install binary and systemd unit
+## Deploy
+
+```bash
+# 1. Copy binary and config
 sudo cp gh-runner-scaler /usr/local/bin/
 sudo mkdir -p /etc/gh-runner-scaler
+cp config.example.toml config.toml
+# Edit config.toml -- set org, template, cache settings, etc.
 sudo cp config.toml /etc/gh-runner-scaler/
+
+# 2. Install systemd unit
 sudo cp systemd/gh-runner-scaler.service /etc/systemd/system/
 
-# 3. Set secrets in the service file
+# 3. Set secrets
 sudo systemctl edit gh-runner-scaler
-# Add Environment= lines for GH_SCALER_GITHUB_TOKEN, GH_WEBHOOK_SECRET,
-# LOKI_PUSH_URL, LOKI_USERNAME, GRAFANA_CLOUD_API_KEY
+# In the override file, add:
+#   [Service]
+#   Environment=GH_SCALER_GITHUB_TOKEN=ghp_...
+#   Environment=GH_WEBHOOK_SECRET=your-secret
+#   Environment=LOKI_PUSH_URL=https://...
+#   Environment=LOKI_USERNAME=...
+#   Environment=GRAFANA_CLOUD_API_KEY=glc_...
 
 # 4. Start
+sudo systemctl daemon-reload
 sudo systemctl enable --now gh-runner-scaler
+
+# 5. Verify
+journalctl -u gh-runner-scaler -f
 ```
+
+### One-shot test
+
+Before enabling the daemon, verify the scaler can talk to LXD and GitHub:
+
+```bash
+sudo GH_SCALER_GITHUB_TOKEN=ghp_... ./gh-runner-scaler reconcile --config config.toml
+```
+
+This runs a single scale check and exits. It should log the current runner state without errors.
 
 ## CLI
 
