@@ -1,0 +1,19 @@
+[Unit]
+Description=GitHub Actions Runner Auto-Scaler
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/gh-runner-scaler daemon --config /etc/gh-runner-scaler/config.toml
+Environment=GH_SCALER_GITHUB_TOKEN=
+Environment=GH_WEBHOOK_SECRET=
+Environment=LOKI_PUSH_URL=
+Environment=LOKI_USERNAME=
+Environment=GRAFANA_CLOUD_API_KEY=
+Restart=on-failure
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target
