@@ -1,11 +1,14 @@
-config
-config.toml
+# Secrets
 .env
+config.toml
+
+# Runtime state
 .state/
-.scaler.lock
-*.pyc
-__pycache__/
+
+# Build artifacts
+gh-runner-scaler
+gh-runner-scaler-linux
+
+# Claude
 CLAUDE.md
 .claude/
-docs/
-scaler

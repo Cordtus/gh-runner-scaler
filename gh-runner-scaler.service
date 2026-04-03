@@ -1,9 +1,0 @@
-[Unit]
-Description=GitHub Actions Runner Auto-Scaler
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/home/bv/gh-runner-scaler/gh-runner-scaler.sh
-User=root

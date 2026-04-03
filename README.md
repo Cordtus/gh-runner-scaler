@@ -290,7 +290,7 @@ sudo chmod 600 /etc/gh-runner-scaler/env
 ### 3. Install systemd unit
 
 ```bash
-sudo cp systemd/gh-runner-scaler.service /etc/systemd/system/
+sudo cp deploy/systemd/gh-runner-scaler.service /etc/systemd/system/
 ```
 
 The unit reads secrets from `/etc/gh-runner-scaler/env` via `EnvironmentFile=`.
@@ -375,7 +375,7 @@ gh-runner-scaler version     # print version
 
 ## Grafana Dashboard
 
-Import `grafana-dashboard.json` into Grafana. Requires a Loki datasource receiving metrics from the scaler. Shows:
+Import `deploy/grafana-dashboard.json` into Grafana. Requires a Loki datasource receiving metrics from the scaler. Shows:
 
 - Runner pool state (total, busy, idle, auto-scaled)
 - Utilization over time
