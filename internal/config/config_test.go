@@ -53,6 +53,16 @@ func TestValidate_RemoteTLSPathsMustBePaired(t *testing.T) {
 	}
 }
 
+func TestValidate_WorkflowRepoBatchSizeMustBeNonNegative(t *testing.T) {
+	cfg := validConfig()
+	cfg.Metrics.WorkflowRepoBatchSize = -1
+
+	err := validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "metrics.workflow_repo_batch_size must be >= 0") {
+		t.Fatalf("expected workflow repo batch size validation error, got %v", err)
+	}
+}
+
 func validConfig() *Config {
 	cfg := defaults()
 	cfg.CI.Org = "test-org"

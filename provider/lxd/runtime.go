@@ -245,7 +245,7 @@ func (r *Runtime) StartContainer(ctx context.Context, name string) error {
 	if err != nil {
 		return fmt.Errorf("starting %s: %w", name, err)
 	}
-	return op.WaitContext(ctx)
+	return waitOperation(ctx, op)
 }
 
 // StopContainer force-stops a running container.
@@ -259,7 +259,7 @@ func (r *Runtime) StopContainer(ctx context.Context, name string) error {
 	if err != nil {
 		return fmt.Errorf("stopping %s: %w", name, err)
 	}
-	return op.WaitContext(ctx)
+	return waitOperation(ctx, op)
 }
 
 // DeleteContainer removes a container entirely.
@@ -268,11 +268,11 @@ func (r *Runtime) DeleteContainer(ctx context.Context, name string) error {
 	if err != nil {
 		return fmt.Errorf("deleting %s: %w", name, err)
 	}
-	return op.WaitContext(ctx)
+	return waitOperation(ctx, op)
 }
 
 // ExecCommand runs a command inside a running container, returning combined stdout/stderr.
-func (r *Runtime) ExecCommand(_ context.Context, name string, cmd []string) (string, error) {
+func (r *Runtime) ExecCommand(ctx context.Context, name string, cmd []string) (string, error) {
 	var stdout, stderr bytes.Buffer
 
 	req := api.InstanceExecPost{
@@ -291,7 +291,7 @@ func (r *Runtime) ExecCommand(_ context.Context, name string, cmd []string) (str
 		return "", fmt.Errorf("exec in %s: %w", name, err)
 	}
 
-	if err := op.Wait(); err != nil {
+	if err := waitOperation(ctx, op); err != nil {
 		return "", fmt.Errorf("exec in %s failed: %w (stderr: %s)", name, err, stderr.String())
 	}
 
@@ -302,6 +302,24 @@ func (r *Runtime) ExecCommand(_ context.Context, name string, cmd []string) (str
 	}
 
 	return stdout.String(), nil
+}
+
+func waitOperation(ctx context.Context, op lxdclient.Operation) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = op.Cancel()
+		case <-done:
+		}
+	}()
+	defer close(done)
+
+	return op.WaitContext(ctx)
 }
 
 // WaitForReady polls until the check command succeeds or the timeout expires.

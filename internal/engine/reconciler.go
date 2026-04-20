@@ -4,6 +4,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -102,7 +103,9 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 		case status == domain.StatusStopped:
 			// Ephemeral runner finished its job and stopped.
 			r.log.Info("container stopped (job complete)", "container", c.Name)
-			r.scaleDown(ctx, c.Name, runners)
+			if err := r.scaleDown(ctx, c.Name, runners); err != nil {
+				r.log.Warn("scale-down cleanup encountered errors", "container", c.Name, "error", err)
+			}
 
 		case isRunnerBusy(c.Name, runners):
 			r.state.SetLastActive(ctx, c.Name, now)
@@ -112,7 +115,9 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 			// This catches containers left behind by crashed scalers,
 			// failed config.sh, or manual intervention.
 			r.log.Info("orphaned container (no registered runner)", "container", c.Name)
-			r.scaleDown(ctx, c.Name, runners)
+			if err := r.scaleDown(ctx, c.Name, runners); err != nil {
+				r.log.Warn("scale-down cleanup encountered errors", "container", c.Name, "error", err)
+			}
 
 		default:
 			// Container is running with a registered idle runner.
@@ -127,7 +132,9 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 				r.log.Info("container idle past timeout",
 					"container", c.Name, "idle", idleDur.Round(time.Second),
 				)
-				r.scaleDown(ctx, c.Name, runners)
+				if err := r.scaleDown(ctx, c.Name, runners); err != nil {
+					r.log.Warn("scale-down cleanup encountered errors", "container", c.Name, "error", err)
+				}
 			}
 		}
 	}
@@ -156,12 +163,6 @@ func (r *Reconciler) scaleUp(ctx context.Context) error {
 		return fmt.Errorf("cloning template: %w", err)
 	}
 
-	// From here on, any failure must clean up the container.
-	cleanup := func() {
-		r.runtime.StopContainer(ctx, name)
-		r.runtime.DeleteContainer(ctx, name)
-	}
-
 	// Attach cache volume (optional).
 	if r.cache != nil && r.cfg.CacheEnabled {
 		if err := r.cache.AttachCache(ctx, name); err != nil {
@@ -172,8 +173,7 @@ func (r *Reconciler) scaleUp(ctx context.Context) error {
 
 	// Start container.
 	if err := r.runtime.StartContainer(ctx, name); err != nil {
-		cleanup()
-		return fmt.Errorf("starting container: %w", err)
+		return scaleUpFailure("starting container", err, r.cleanupFailedScaleUp(ctx, name, false))
 	}
 
 	// Wait for boot.
@@ -186,8 +186,7 @@ func (r *Reconciler) scaleUp(ctx context.Context) error {
 		timeout = 90 * time.Second
 	}
 	if err := r.runtime.WaitForReady(ctx, name, readyCheck, timeout); err != nil {
-		cleanup()
-		return fmt.Errorf("container not ready: %w", err)
+		return scaleUpFailure("container not ready", err, r.cleanupFailedScaleUp(ctx, name, true))
 	}
 
 	// Setup cache symlinks (optional).
@@ -206,15 +205,13 @@ func (r *Reconciler) scaleUp(ctx context.Context) error {
 		),
 	}
 	if _, err := r.runtime.ExecCommand(ctx, name, configCmd); err != nil {
-		cleanup()
-		return fmt.Errorf("runner config failed: %w", err)
+		return scaleUpFailure("runner config failed", err, r.cleanupFailedScaleUp(ctx, name, true))
 	}
 
 	// Install and start the runner service.
 	svcCmd := []string{"bash", "-c", "cd /home/runner && ./svc.sh install runner && ./svc.sh start"}
 	if _, err := r.runtime.ExecCommand(ctx, name, svcCmd); err != nil {
-		cleanup()
-		return fmt.Errorf("runner service start failed: %w", err)
+		return scaleUpFailure("runner service start failed", err, r.cleanupFailedScaleUp(ctx, name, true))
 	}
 
 	// Track state.
@@ -227,17 +224,24 @@ func (r *Reconciler) scaleUp(ctx context.Context) error {
 }
 
 // scaleDown tears down a container with belt-and-suspenders deregistration.
-func (r *Reconciler) scaleDown(ctx context.Context, name string, runners []domain.Runner) {
+func (r *Reconciler) scaleDown(ctx context.Context, name string, runners []domain.Runner) error {
 	r.log.Info("scaling down", "container", name)
+	var errs []error
 
 	// Stop runner service (best-effort).
-	r.runtime.ExecCommand(ctx, name, []string{"bash", "-c", "cd /home/runner && ./svc.sh stop"})
+	if _, err := r.runtime.ExecCommand(ctx, name, []string{"bash", "-c", "cd /home/runner && ./svc.sh stop"}); err != nil {
+		errs = append(errs, fmt.Errorf("stop runner service: %w", err))
+	}
 
 	// Deregister via config.sh remove (best-effort).
 	removeToken, err := r.ci.GetRemoveToken(ctx)
-	if err == nil && removeToken != "" {
+	if err != nil {
+		errs = append(errs, fmt.Errorf("get remove token: %w", err))
+	} else if removeToken != "" {
 		cmd := []string{"su", "-", "runner", "-c", fmt.Sprintf("./config.sh remove --token '%s'", removeToken)}
-		r.runtime.ExecCommand(ctx, name, cmd)
+		if _, err := r.runtime.ExecCommand(ctx, name, cmd); err != nil {
+			errs = append(errs, fmt.Errorf("runner config remove: %w", err))
+		}
 	}
 
 	// Belt-and-suspenders: delete via API.
@@ -253,13 +257,23 @@ func (r *Reconciler) scaleDown(ctx context.Context, name string, runners []domai
 	}
 
 	// Stop and delete container.
-	r.runtime.StopContainer(ctx, name)
-	r.runtime.DeleteContainer(ctx, name)
+	if err := r.runtime.StopContainer(ctx, name); err != nil {
+		errs = append(errs, fmt.Errorf("stop container: %w", err))
+	}
+	if err := r.runtime.DeleteContainer(ctx, name); err != nil {
+		errs = append(errs, fmt.Errorf("delete container: %w", err))
+	}
 
 	// Clean up state.
-	r.state.Delete(ctx, name)
+	if err := r.state.Delete(ctx, name); err != nil {
+		errs = append(errs, fmt.Errorf("delete state: %w", err))
+	}
 
 	r.log.Info("scaled down", "container", name)
+	if len(errs) > 0 {
+		return fmt.Errorf("scale-down %s: %w", name, errors.Join(errs...))
+	}
+	return nil
 }
 
 // nextName finds the next available container name (e.g. gh-runner-auto-1, -2, ...).
@@ -331,4 +345,30 @@ func availableRunnerCount(runners []domain.Runner) int {
 		}
 	}
 	return count
+}
+
+func (r *Reconciler) cleanupFailedScaleUp(ctx context.Context, name string, attemptStop bool) error {
+	var errs []error
+	if attemptStop {
+		if err := r.runtime.StopContainer(ctx, name); err != nil {
+			errs = append(errs, fmt.Errorf("stop container: %w", err))
+		}
+	}
+	if err := r.runtime.DeleteContainer(ctx, name); err != nil {
+		errs = append(errs, fmt.Errorf("delete container: %w", err))
+	}
+	if len(errs) == 0 {
+		return nil
+	}
+	return errors.Join(errs...)
+}
+
+func scaleUpFailure(action string, err, cleanupErr error) error {
+	if cleanupErr == nil {
+		return fmt.Errorf("%s: %w", action, err)
+	}
+	return errors.Join(
+		fmt.Errorf("%s: %w", action, err),
+		fmt.Errorf("cleanup after %s: %w", action, cleanupErr),
+	)
 }

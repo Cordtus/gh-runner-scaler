@@ -2,7 +2,9 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +20,8 @@ type mockRuntime struct {
 	execCalls  [][]string
 	cloneErr   error
 	execErr    error
+	stopErr    error
+	deleteErr  error
 }
 
 func newMockRuntime() *mockRuntime {
@@ -44,6 +48,9 @@ func (m *mockRuntime) StartContainer(_ context.Context, name string) error {
 func (m *mockRuntime) StopContainer(_ context.Context, name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.stopErr != nil {
+		return m.stopErr
+	}
 	m.containers[name] = domain.StatusStopped
 	return nil
 }
@@ -51,6 +58,9 @@ func (m *mockRuntime) StopContainer(_ context.Context, name string) error {
 func (m *mockRuntime) DeleteContainer(_ context.Context, name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.deleteErr != nil {
+		return m.deleteErr
+	}
 	delete(m.containers, name)
 	return nil
 }
@@ -145,8 +155,9 @@ func (m *mockCache) SetupCacheSymlinks(_ context.Context, name string) error {
 }
 
 type mockState struct {
-	mu     sync.Mutex
-	states map[string]time.Time
+	mu        sync.Mutex
+	states    map[string]time.Time
+	deleteErr error
 }
 
 func newMockState() *mockState {
@@ -180,6 +191,9 @@ func (m *mockState) Create(_ context.Context, name string) error {
 func (m *mockState) Delete(_ context.Context, name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.deleteErr != nil {
+		return m.deleteErr
+	}
 	delete(m.states, name)
 	return nil
 }
@@ -448,6 +462,37 @@ func TestScaleDown_OrphanedContainer(t *testing.T) {
 	defer runtime.mu.Unlock()
 	if _, ok := runtime.containers["auto-1"]; ok {
 		t.Error("orphaned container should have been cleaned up")
+	}
+}
+
+func TestScaleDown_ReturnsCleanupErrors(t *testing.T) {
+	runtime := newMockRuntime()
+	runtime.containers["auto-1"] = domain.StatusRunning
+	runtime.stopErr = errors.New("stop failed")
+	runtime.deleteErr = errors.New("delete failed")
+
+	ci := &mockCI{
+		runners:     []domain.Runner{{ID: 1, Name: "auto-1", Busy: false, Status: "offline"}},
+		removeToken: "remove-token",
+		prefix:      "auto",
+	}
+	state := newMockState()
+	state.deleteErr = errors.New("state delete failed")
+
+	r := newTestReconciler(runtime, ci, state, nil)
+
+	err := r.scaleDown(context.Background(), "auto-1", ci.runners)
+	if err == nil {
+		t.Fatal("expected scaleDown to return cleanup errors")
+	}
+	if !strings.Contains(err.Error(), "stop container") {
+		t.Fatalf("expected stop container error in %v", err)
+	}
+	if !strings.Contains(err.Error(), "delete container") {
+		t.Fatalf("expected delete container error in %v", err)
+	}
+	if !strings.Contains(err.Error(), "delete state") {
+		t.Fatalf("expected delete state error in %v", err)
 	}
 }
 

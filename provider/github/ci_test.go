@@ -59,11 +59,13 @@ func TestListRunners_PaginatesAcrossAllPages(t *testing.T) {
 	}
 }
 
-func TestListRecentWorkflowRuns_PaginatesRepos(t *testing.T) {
+func TestListRecentWorkflowRuns_BatchesReposAndCachesRepoList(t *testing.T) {
+	var repoListCalls int
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/orgs/test-org/repos":
+			repoListCalls++
 			repos := []map[string]any{{"name": "repo-a"}}
 			if r.URL.Query().Get("page") == "2" {
 				repos = []map[string]any{{"name": "repo-b"}}
@@ -96,12 +98,24 @@ func TestListRecentWorkflowRuns_PaginatesRepos(t *testing.T) {
 	defer server.Close()
 
 	provider := testProvider(t, server)
+	provider.SetWorkflowRepoBatchSize(1)
 	runs, err := provider.ListRecentWorkflowRuns(context.Background(), 1)
 	if err != nil {
 		t.Fatalf("ListRecentWorkflowRuns returned error: %v", err)
 	}
-	if len(runs) != 2 {
-		t.Fatalf("expected workflow runs for both paginated repos, got %d", len(runs))
+	if len(runs) != 1 || runs[0].Repo != "repo-a" {
+		t.Fatalf("expected first batch to include repo-a, got %+v", runs)
+	}
+
+	runs, err = provider.ListRecentWorkflowRuns(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("second ListRecentWorkflowRuns returned error: %v", err)
+	}
+	if len(runs) != 1 || runs[0].Repo != "repo-b" {
+		t.Fatalf("expected second batch to include repo-b, got %+v", runs)
+	}
+	if repoListCalls != 2 {
+		t.Fatalf("expected one paginated repo fetch across two pages before caching, got %d calls", repoListCalls)
 	}
 }
 

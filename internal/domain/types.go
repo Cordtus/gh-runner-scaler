@@ -64,10 +64,11 @@ const (
 
 // WebhookEvent is a provider-agnostic representation of a webhook payload.
 type WebhookEvent struct {
-	Type   WebhookEventType
-	Repo   string // e.g. "Axionic-Labs/axionic-ui"
-	Ref    string // e.g. "refs/heads/main"
-	Detail string // human-readable summary for logging
+	Type          WebhookEventType
+	Repo          string // e.g. "Axionic-Labs/axionic-ui"
+	Ref           string // e.g. "refs/heads/main"
+	DefaultBranch string // e.g. "main"
+	Detail        string // human-readable summary for logging
 }
 
 // RunnerDetail is a per-runner entry in metrics payloads.

@@ -107,7 +107,8 @@ func parsePush(payload []byte) (*domain.WebhookEvent, error) {
 		Ref        string `json:"ref"`
 		After      string `json:"after"`
 		Repository struct {
-			FullName string `json:"full_name"`
+			FullName      string `json:"full_name"`
+			DefaultBranch string `json:"default_branch"`
 		} `json:"repository"`
 	}
 	if err := json.Unmarshal(payload, &event); err != nil {
@@ -120,9 +121,10 @@ func parsePush(payload []byte) (*domain.WebhookEvent, error) {
 	}
 
 	return &domain.WebhookEvent{
-		Type:   domain.EventPush,
-		Repo:   event.Repository.FullName,
-		Ref:    event.Ref,
-		Detail: fmt.Sprintf("push %s to %s (%s)", event.Ref, event.Repository.FullName, short),
+		Type:          domain.EventPush,
+		Repo:          event.Repository.FullName,
+		Ref:           event.Ref,
+		DefaultBranch: event.Repository.DefaultBranch,
+		Detail:        fmt.Sprintf("push %s to %s (%s)", event.Ref, event.Repository.FullName, short),
 	}, nil
 }

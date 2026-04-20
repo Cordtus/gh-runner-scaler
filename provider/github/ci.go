@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
+	"time"
 
 	gh "github.com/google/go-github/v74/github"
 
@@ -13,10 +15,16 @@ import (
 
 // Provider implements CIProvider for GitHub Actions.
 type Provider struct {
-	client    *gh.Client
-	org       string
-	prefix    string
-	validator *WebhookValidator
+	client                *gh.Client
+	org                   string
+	prefix                string
+	validator             *WebhookValidator
+	mu                    sync.Mutex
+	workflowRepoBatchSize int
+	repoCacheTTL          time.Duration
+	repoCache             []string
+	repoCacheExpiresAt    time.Time
+	workflowRepoCursor    int
 }
 
 // New creates a GitHub CI provider.
@@ -27,10 +35,23 @@ func New(token, org, prefix string) *Provider {
 
 func newProvider(client *gh.Client, org, prefix string) *Provider {
 	return &Provider{
-		client: client,
-		org:    org,
-		prefix: prefix,
+		client:                client,
+		org:                   org,
+		prefix:                prefix,
+		workflowRepoBatchSize: 25,
+		repoCacheTTL:          10 * time.Minute,
 	}
+}
+
+// SetWorkflowRepoBatchSize bounds workflow metrics collection to a repo subset per interval.
+// Zero disables the cap and scans every repo in the org.
+func (p *Provider) SetWorkflowRepoBatchSize(size int) {
+	if size < 0 {
+		size = 0
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.workflowRepoBatchSize = size
 }
 
 // ListRunners returns all runners registered with the org.
@@ -115,10 +136,11 @@ func (p *Provider) ListRecentWorkflowRuns(ctx context.Context, perRepo int) ([]d
 	if err != nil {
 		return nil, fmt.Errorf("listing org repos: %w", err)
 	}
+	repos = p.workflowRepoBatch(repos)
 
 	var results []domain.WorkflowMetrics
 	for _, repo := range repos {
-		runs, err := p.listRepositoryWorkflowRuns(ctx, repo.GetName(), perRepo)
+		runs, err := p.listRepositoryWorkflowRuns(ctx, repo, perRepo)
 		if err != nil {
 			continue
 		}
@@ -132,7 +154,7 @@ func (p *Provider) ListRecentWorkflowRuns(ctx context.Context, perRepo int) ([]d
 			}
 
 			results = append(results, domain.WorkflowMetrics{
-				Repo:       repo.GetName(),
+				Repo:       repo,
 				Workflow:   run.GetName(),
 				Conclusion: run.GetConclusion(),
 				DurationS:  durationS,
@@ -145,22 +167,44 @@ func (p *Provider) ListRecentWorkflowRuns(ctx context.Context, perRepo int) ([]d
 	return results, nil
 }
 
-func (p *Provider) listOrgRepos(ctx context.Context) ([]*gh.Repository, error) {
+func (p *Provider) listOrgRepos(ctx context.Context) ([]string, error) {
+	p.mu.Lock()
+	if len(p.repoCache) > 0 && time.Now().Before(p.repoCacheExpiresAt) {
+		cached := append([]string(nil), p.repoCache...)
+		p.mu.Unlock()
+		return cached, nil
+	}
+	p.mu.Unlock()
+
 	opts := &gh.RepositoryListByOrgOptions{
 		ListOptions: gh.ListOptions{PerPage: 100},
 	}
-	var repos []*gh.Repository
+	var repos []string
 	for {
 		pageRepos, resp, err := p.client.Repositories.ListByOrg(ctx, p.org, opts)
 		if err != nil {
 			return nil, err
 		}
-		repos = append(repos, pageRepos...)
+		for _, repo := range pageRepos {
+			repos = append(repos, repo.GetName())
+		}
 		if resp.NextPage == 0 {
-			return repos, nil
+			break
 		}
 		opts.Page = resp.NextPage
 	}
+
+	p.mu.Lock()
+	p.repoCache = append([]string(nil), repos...)
+	p.repoCacheExpiresAt = time.Now().Add(p.repoCacheTTL)
+	if len(repos) == 0 {
+		p.workflowRepoCursor = 0
+	} else {
+		p.workflowRepoCursor %= len(repos)
+	}
+	p.mu.Unlock()
+
+	return repos, nil
 }
 
 func (p *Provider) listRepositoryWorkflowRuns(ctx context.Context, repo string, limit int) ([]*gh.WorkflowRun, error) {
@@ -189,4 +233,22 @@ func (p *Provider) listRepositoryWorkflowRuns(ctx context.Context, repo string, 
 		}
 		opts.Page = resp.NextPage
 	}
+}
+
+func (p *Provider) workflowRepoBatch(repos []string) []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	limit := p.workflowRepoBatchSize
+	if limit == 0 || len(repos) <= limit {
+		return append([]string(nil), repos...)
+	}
+
+	start := p.workflowRepoCursor % len(repos)
+	batch := make([]string, 0, limit)
+	for i := 0; i < limit; i++ {
+		batch = append(batch, repos[(start+i)%len(repos)])
+	}
+	p.workflowRepoCursor = (start + limit) % len(repos)
+	return batch
 }

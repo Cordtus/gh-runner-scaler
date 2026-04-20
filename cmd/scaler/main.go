@@ -189,6 +189,7 @@ func wireProviders(cfg *config.Config, log *slog.Logger) (
 	case "github":
 		p := ghprovider.New(cfg.CI.GitHub.Token, cfg.CI.Org, cfg.Scaler.Prefix)
 		p.SetValidator(cfg.CI.GitHub.WebhookSecret)
+		p.SetWorkflowRepoBatchSize(cfg.Metrics.WorkflowRepoBatchSize)
 		ci = p
 	default:
 		return nil, nil, nil, nil, nil, fmt.Errorf("unsupported CI provider: %s", cfg.CI.Provider)

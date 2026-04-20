@@ -60,7 +60,7 @@ port = 9876
 debounce = "2s"
 
 [webhook.sync_repos]
-# Push-to-main triggers cache sync for these repos.
+# Pushes to each repo's default branch trigger cache syncs for these repos.
 # Key = repo full name, value = path on cache volume.
 "Axionic-Labs/axionic-ui" = "/cache/axionic-ui"
 
@@ -68,6 +68,7 @@ debounce = "2s"
 enabled = true
 interval = "60s"
 collect_workflows = true
+workflow_repo_batch_size = 25     # 0 = scan every repo each interval
 collect_host = true
 
 [metrics.loki]

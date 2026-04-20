@@ -85,11 +85,12 @@ type WebhookConfig struct {
 
 // MetricsConfig controls the metrics collection and push.
 type MetricsConfig struct {
-	Enabled          bool       `toml:"enabled"`
-	Interval         Duration   `toml:"interval"`
-	CollectWorkflows bool       `toml:"collect_workflows"`
-	CollectHost      bool       `toml:"collect_host"`
-	Loki             LokiConfig `toml:"loki"`
+	Enabled               bool       `toml:"enabled"`
+	Interval              Duration   `toml:"interval"`
+	CollectWorkflows      bool       `toml:"collect_workflows"`
+	WorkflowRepoBatchSize int        `toml:"workflow_repo_batch_size"`
+	CollectHost           bool       `toml:"collect_host"`
+	Loki                  LokiConfig `toml:"loki"`
 }
 
 // LokiConfig holds Grafana Loki connection settings.
@@ -169,10 +170,11 @@ func defaults() *Config {
 			Debounce: Duration{2 * time.Second},
 		},
 		Metrics: MetricsConfig{
-			Enabled:          true,
-			Interval:         Duration{60 * time.Second},
-			CollectWorkflows: true,
-			CollectHost:      true,
+			Enabled:               true,
+			Interval:              Duration{60 * time.Second},
+			CollectWorkflows:      true,
+			WorkflowRepoBatchSize: 25,
+			CollectHost:           true,
 		},
 		State: StateConfig{
 			Provider:   "filesystem",
@@ -263,6 +265,9 @@ func validate(cfg *Config) error {
 	}
 	if cfg.Metrics.Enabled && cfg.Metrics.Interval.Duration <= 0 {
 		return fmt.Errorf("metrics.interval must be > 0")
+	}
+	if cfg.Metrics.WorkflowRepoBatchSize < 0 {
+		return fmt.Errorf("metrics.workflow_repo_batch_size must be >= 0")
 	}
 	if cfg.State.Filesystem.Dir == "" {
 		return fmt.Errorf("state.filesystem.dir is required")

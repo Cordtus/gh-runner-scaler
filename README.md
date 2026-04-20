@@ -45,7 +45,7 @@ clone template -> start -> wait for boot (90s max)
 
 Deregistration is belt-and-suspenders: `config.sh remove` followed by a GitHub API DELETE.
 
-**Webhook** is the primary event driver. `workflow_job.queued` triggers the scaler within 2 seconds (debounced). `push` events to tracked repos trigger cache volume syncs via `lxc exec` on a running container.
+**Webhook** is the primary event driver. `workflow_job.queued` triggers the scaler within 2 seconds (debounced). `push` events to tracked repos trigger cache volume syncs via `lxc exec` on a running container when the push targets that repo's default branch.
 
 **Poll loop** runs every `poll_interval` as a safety net in case a webhook is missed.
 
@@ -261,6 +261,7 @@ target = "/home/runner/.npm"
 ```
 
 Each entry creates a symlink inside the container mapping `target` to `source` on the cache volume.
+The cache volume is intentionally shared and long-lived, so new ephemeral runners inherit the accumulated cache state from prior runners instead of starting cold each time.
 
 #### CI: `[ci]`
 
@@ -279,14 +280,14 @@ GitHub-specific settings under `[ci.github]` are currently empty -- token and we
 | `port` | `9876` | Listen port |
 | `debounce` | `2s` | Collapse rapid events within this window |
 
-Push-to-main cache syncs are configured under `[webhook.sync_repos]`:
+Default-branch cache syncs are configured under `[webhook.sync_repos]`:
 
 ```toml
 [webhook.sync_repos]
 "Org/repo-name" = "/cache/path"
 ```
 
-When a push to `main` is received for a listed repo, the scaler execs `git fetch && git reset --hard` inside a running container at the given cache path.
+When a push to the repo's default branch is received for a listed repo, the scaler updates the shared cache checkout inside a running container at the given cache path.
 
 #### Metrics: `[metrics]`
 
@@ -295,6 +296,7 @@ When a push to `main` is received for a listed repo, the scaler execs `git fetch
 | `enabled` | `true` | Push metrics to backend |
 | `interval` | `60s` | Collection and push interval |
 | `collect_workflows` | `true` | Include recent workflow run durations and outcomes |
+| `workflow_repo_batch_size` | `25` | Max repos scanned per workflow-metrics interval (`0` = scan all repos) |
 | `collect_host` | `true` | Include container counts and storage pool usage |
 
 Loki-specific settings under `[metrics.loki]` are set via environment variables.
