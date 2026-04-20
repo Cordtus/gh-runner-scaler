@@ -8,6 +8,7 @@ config.toml
 # Build artifacts
 gh-runner-scaler
 gh-runner-scaler-linux
+/scaler
 
 # Claude
 CLAUDE.md

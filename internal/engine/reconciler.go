@@ -21,8 +21,8 @@ type ReconcilerConfig struct {
 	Labels         string
 	RunnerWorkDir  string
 	CacheEnabled   bool
-	ReadyCheck     []string       // command to poll inside container (e.g. ["test", "-f", "/home/runner/config.sh"])
-	ReadyTimeout   time.Duration  // max wait for container boot
+	ReadyCheck     []string      // command to poll inside container (e.g. ["test", "-f", "/home/runner/config.sh"])
+	ReadyTimeout   time.Duration // max wait for container boot
 }
 
 // Reconciler implements the scale-up/scale-down decision loop.
@@ -68,9 +68,10 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 
 	// 2. Build snapshot.
 	snap := buildSnapshot(runners, r.cfg.Prefix)
+	availableOnline := availableRunnerCount(runners)
 	r.log.Info("runner state",
 		"total", snap.Total, "busy", snap.Busy, "idle", snap.Idle,
-		"auto", snap.Auto, "permanent", snap.Permanent,
+		"auto", snap.Auto, "permanent", snap.Permanent, "available_online", availableOnline,
 	)
 
 	// 3. List auto-scaled containers from runtime.
@@ -80,8 +81,8 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 	}
 	autoCount := len(containers)
 
-	// 4. Scale up: all runners busy and under the cap.
-	if snap.Idle == 0 && autoCount < r.cfg.MaxAutoRunners {
+	// 4. Scale up: no online idle runners are available and we're under the cap.
+	if availableOnline == 0 && autoCount < r.cfg.MaxAutoRunners {
 		r.log.Info("all runners busy, scaling up")
 		if err := r.scaleUp(ctx); err != nil {
 			r.log.Error("scale-up failed", "error", err)
@@ -320,4 +321,14 @@ func hasRunner(containerName string, runners []domain.Runner) bool {
 		}
 	}
 	return false
+}
+
+func availableRunnerCount(runners []domain.Runner) int {
+	count := 0
+	for _, r := range runners {
+		if r.Status == "online" && !r.Busy {
+			count++
+		}
+	}
+	return count
 }

@@ -89,11 +89,11 @@ func (m *mockRuntime) GetContainerStatus(_ context.Context, name string) (domain
 }
 
 type mockCI struct {
-	runners       []domain.Runner
-	regToken      string
-	removeToken   string
-	deletedIDs    []int64
-	prefix        string
+	runners     []domain.Runner
+	regToken    string
+	removeToken string
+	deletedIDs  []int64
+	prefix      string
 }
 
 func (m *mockCI) ListRunners(_ context.Context) ([]domain.Runner, error) {
@@ -254,6 +254,30 @@ func TestNoScaleUp_WhenIdleRunnerExists(t *testing.T) {
 	defer runtime.mu.Unlock()
 	if len(runtime.containers) > 0 {
 		t.Error("should not have created any containers when idle runner exists")
+	}
+}
+
+func TestScaleUp_WhenOnlyOfflineRunnerExists(t *testing.T) {
+	runtime := newMockRuntime()
+	ci := &mockCI{
+		runners: []domain.Runner{
+			{ID: 1, Name: "permanent", Busy: false, Status: "offline"},
+		},
+		regToken: "test-token",
+		prefix:   "auto",
+	}
+	state := newMockState()
+	r := newTestReconciler(runtime, ci, state, nil)
+
+	err := r.Reconcile(context.Background())
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if _, ok := runtime.containers["auto-1"]; !ok {
+		t.Error("expected auto-1 container to be created when only offline runners exist")
 	}
 }
 

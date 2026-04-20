@@ -157,6 +157,8 @@ func wireProviders(cfg *config.Config, log *slog.Logger) (
 			cfg.Container.LXD.Socket,
 			cfg.Container.LXD.Remote,
 			cfg.Container.LXD.RemoteURL,
+			cfg.Container.LXD.RemoteCert,
+			cfg.Container.LXD.RemoteKey,
 			cfg.Container.Template,
 		)
 		if err != nil {

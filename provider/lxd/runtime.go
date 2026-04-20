@@ -35,14 +35,14 @@ type Runtime struct {
 //
 // TLS certs are read from certPath/keyPath if provided, or from the
 // standard LXD client config directory (~/.config/lxc/).
-func New(socket, remote, remoteURL, template string) (*Runtime, error) {
+func New(socket, remote, remoteURL, certPath, keyPath, template string) (*Runtime, error) {
 	var server lxdclient.InstanceServer
 	var err error
 
 	switch {
 	case remoteURL != "":
 		// Explicit remote URL -- use TLS client certs.
-		server, err = connectRemote(remoteURL)
+		server, err = connectRemote(remoteURL, certPath, keyPath, serverCertPathForRemote(remote))
 		if err != nil {
 			return nil, fmt.Errorf("connecting to remote LXD at %s: %w", remoteURL, err)
 		}
@@ -53,7 +53,7 @@ func New(socket, remote, remoteURL, template string) (*Runtime, error) {
 		if err != nil {
 			return nil, fmt.Errorf("resolving remote %q: %w", remote, err)
 		}
-		server, err = connectRemote(addr)
+		server, err = connectRemote(addr, certPath, keyPath, serverCertPathForRemote(remote))
 		if err != nil {
 			return nil, fmt.Errorf("connecting to remote %q at %s: %w", remote, addr, err)
 		}
@@ -78,11 +78,15 @@ func New(socket, remote, remoteURL, template string) (*Runtime, error) {
 }
 
 // connectRemote connects to a remote LXD daemon over HTTPS using
-// TLS client certs from the standard LXD config directory.
-func connectRemote(addr string) (lxdclient.InstanceServer, error) {
+// TLS client certs from explicit paths or the standard LXD config directory.
+func connectRemote(addr, certPath, keyPath, serverCertPath string) (lxdclient.InstanceServer, error) {
 	configDir := lxdConfigDir()
-	certPath := filepath.Join(configDir, "client.crt")
-	keyPath := filepath.Join(configDir, "client.key")
+	if certPath == "" {
+		certPath = filepath.Join(configDir, "client.crt")
+	}
+	if keyPath == "" {
+		keyPath = filepath.Join(configDir, "client.key")
+	}
 
 	clientCert, err := os.ReadFile(certPath)
 	if err != nil {
@@ -93,17 +97,14 @@ func connectRemote(addr string) (lxdclient.InstanceServer, error) {
 		return nil, fmt.Errorf("reading client key %s: %w", keyPath, err)
 	}
 
-	// Read the server cert if available (for certificate pinning).
 	serverCert := ""
-	serverCertDir := filepath.Join(configDir, "servercerts")
-	entries, _ := os.ReadDir(serverCertDir)
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".crt") {
-			data, err := os.ReadFile(filepath.Join(serverCertDir, e.Name()))
-			if err == nil {
-				serverCert = string(data)
-				break
-			}
+	if serverCertPath != "" {
+		data, err := os.ReadFile(serverCertPath)
+		switch {
+		case err == nil:
+			serverCert = string(data)
+		case !os.IsNotExist(err):
+			return nil, fmt.Errorf("reading server cert %s: %w", serverCertPath, err)
 		}
 	}
 
@@ -112,6 +113,13 @@ func connectRemote(addr string) (lxdclient.InstanceServer, error) {
 		TLSClientKey:  string(clientKey),
 		TLSServerCert: serverCert,
 	})
+}
+
+func serverCertPathForRemote(remote string) string {
+	if remote == "" {
+		return ""
+	}
+	return filepath.Join(lxdConfigDir(), "servercerts", remote+".crt")
 }
 
 // resolveRemoteAddr looks up a named remote's address from the LXD client

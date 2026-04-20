@@ -202,6 +202,8 @@ Cross-compile:
 GOOS=linux GOARCH=amd64 go build -o gh-runner-scaler ./cmd/scaler/
 ```
 
+CI runs `gofmt`, `go vet`, `go test`, and `go build` on pushes and pull requests via `.github/workflows/ci.yml`.
+
 ---
 
 ## Configuration

@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -39,9 +40,9 @@ type ContainerConfig struct {
 
 // LXDConfig holds LXD-specific connection settings.
 type LXDConfig struct {
-	Socket    string `toml:"socket"`
-	Remote    string `toml:"remote"`
-	RemoteURL string `toml:"remote_url"`
+	Socket     string `toml:"socket"`
+	Remote     string `toml:"remote"`
+	RemoteURL  string `toml:"remote_url"`
 	RemoteCert string `toml:"remote_cert"`
 	RemoteKey  string `toml:"remote_key"`
 }
@@ -205,15 +206,66 @@ func validate(cfg *Config) error {
 	if cfg.CI.GitHub.Token == "" && cfg.CI.Provider == "github" {
 		return fmt.Errorf("GH_SCALER_GITHUB_TOKEN env var is required")
 	}
+	if cfg.Scaler.Prefix == "" {
+		return fmt.Errorf("scaler.prefix is required")
+	}
+	if cfg.Scaler.MaxAutoRunners < 0 {
+		return fmt.Errorf("scaler.max_auto_runners must be >= 0")
+	}
+	if cfg.Scaler.IdleTimeout.Duration <= 0 {
+		return fmt.Errorf("scaler.idle_timeout must be > 0")
+	}
+	if cfg.Scaler.PollInterval.Duration <= 0 {
+		return fmt.Errorf("scaler.poll_interval must be > 0")
+	}
 	if cfg.Container.Template == "" {
 		return fmt.Errorf("container.template is required")
+	}
+	if (cfg.Container.LXD.RemoteCert == "") != (cfg.Container.LXD.RemoteKey == "") {
+		return fmt.Errorf("container.lxd.remote_cert and remote_key must be set together")
+	}
+	if cfg.Cache.Enabled {
+		if cfg.Cache.Pool == "" {
+			return fmt.Errorf("cache.pool is required when cache is enabled")
+		}
+		if cfg.Cache.Volume == "" {
+			return fmt.Errorf("cache.volume is required when cache is enabled")
+		}
+		for _, sl := range cfg.Cache.Symlinks {
+			if !filepath.IsAbs(sl.Source) {
+				return fmt.Errorf("cache.symlinks source must be absolute: %s", sl.Source)
+			}
+			if !filepath.IsAbs(sl.Target) {
+				return fmt.Errorf("cache.symlinks target must be absolute: %s", sl.Target)
+			}
+		}
 	}
 	if cfg.Webhook.Enabled && cfg.CI.GitHub.WebhookSecret == "" && cfg.CI.Provider == "github" {
 		return fmt.Errorf("GH_WEBHOOK_SECRET env var is required when webhook is enabled")
 	}
+	if cfg.Webhook.Enabled {
+		if cfg.Webhook.Port <= 0 || cfg.Webhook.Port > 65535 {
+			return fmt.Errorf("webhook.port must be between 1 and 65535")
+		}
+		if cfg.Webhook.Debounce.Duration < 0 {
+			return fmt.Errorf("webhook.debounce must be >= 0")
+		}
+	}
 	if cfg.Metrics.Enabled && cfg.Metrics.Loki.PushURL == "" {
 		// Only validate Loki config if the metrics backend is loki (currently the only one)
 		return fmt.Errorf("LOKI_PUSH_URL env var is required when metrics are enabled")
+	}
+	if cfg.Metrics.Enabled && cfg.Metrics.Loki.Username == "" {
+		return fmt.Errorf("LOKI_USERNAME env var is required when metrics are enabled")
+	}
+	if cfg.Metrics.Enabled && cfg.Metrics.Loki.APIKey == "" {
+		return fmt.Errorf("GRAFANA_CLOUD_API_KEY env var is required when metrics are enabled")
+	}
+	if cfg.Metrics.Enabled && cfg.Metrics.Interval.Duration <= 0 {
+		return fmt.Errorf("metrics.interval must be > 0")
+	}
+	if cfg.State.Filesystem.Dir == "" {
+		return fmt.Errorf("state.filesystem.dir is required")
 	}
 	return nil
 }

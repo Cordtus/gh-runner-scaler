@@ -13,6 +13,8 @@ import (
 	"github.com/Cordtus/gh-runner-scaler/internal/domain"
 )
 
+const maxWebhookBodyBytes = 1 << 20
+
 // runWebhookServer starts the HTTP webhook listener and blocks until ctx is cancelled.
 func (d *Daemon) runWebhookServer(ctx context.Context) {
 	mux := http.NewServeMux()
@@ -20,8 +22,13 @@ func (d *Daemon) runWebhookServer(ctx context.Context) {
 
 	addr := fmt.Sprintf(":%d", d.cfg.WebhookPort)
 	server := &http.Server{
-		Addr:    addr,
-		Handler: mux,
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    8 << 10,
 	}
 
 	go func() {
@@ -69,6 +76,9 @@ func (d *Daemon) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	defer r.Body.Close()
+	r.Body = http.MaxBytesReader(w, r.Body, maxWebhookBodyBytes)
 
 	payload, err := io.ReadAll(r.Body)
 	if err != nil {
