@@ -144,6 +144,12 @@ useradd -m -d /home/runner -s /bin/bash runner
 chown -R runner:runner /home/runner
 
 # Install additional tools your workflows need (node, python, etc.)
+#
+# If any jobs use Playwright on self-hosted runners, pre-install the pinned
+# browser bundle on the template so clones do not fail on first use. For
+# Spectra-App this currently means Playwright 1.58.2 plus Chromium:
+su - runner -c \
+  'PLAYWRIGHT_BROWSERS_PATH=/home/runner/.cache/ms-playwright npx playwright@1.58.2 install --with-deps chromium'
 ```
 
 Then exit and stop:
