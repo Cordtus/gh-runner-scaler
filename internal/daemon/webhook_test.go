@@ -31,3 +31,9 @@ func TestCacheSyncBranch_NonDefaultBranchPush(t *testing.T) {
 		t.Fatalf("expected non-default branch push to be ignored, got %q", branch)
 	}
 }
+
+func TestCacheSyncBranch_NilEvent(t *testing.T) {
+	if branch, ok := cacheSyncBranch(nil); ok {
+		t.Fatalf("expected nil event to be ignored, got %q", branch)
+	}
+}

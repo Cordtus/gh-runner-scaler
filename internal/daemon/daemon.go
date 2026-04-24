@@ -4,8 +4,10 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sync"
 	"time"
 
@@ -38,7 +40,38 @@ type Daemon struct {
 	log        *slog.Logger
 
 	triggerCh chan struct{}
+	debouncer *debouncer
 	mu        sync.Mutex
+
+	reconcileRunning          bool
+	triggerSeq                uint64
+	reconcileRuns             uint64
+	reconcileFailures         uint64
+	lastWebhookAt             time.Time
+	lastWebhookType           string
+	lastWebhookDetail         string
+	lastReconcileStartedAt    time.Time
+	lastReconcileFinishedAt   time.Time
+	lastSuccessfulReconcileAt time.Time
+	lastReconcileError        string
+	lifecycleCtx              context.Context
+}
+
+type statusSnapshot struct {
+	PollInterval              string `json:"poll_interval"`
+	WebhookEnabled            bool   `json:"webhook_enabled"`
+	MetricsEnabled            bool   `json:"metrics_enabled"`
+	ReconcileRunning          bool   `json:"reconcile_running"`
+	TriggerSequence           uint64 `json:"trigger_sequence"`
+	ReconcileRuns             uint64 `json:"reconcile_runs"`
+	ReconcileFailures         uint64 `json:"reconcile_failures"`
+	LastWebhookAt             string `json:"last_webhook_at,omitempty"`
+	LastWebhookType           string `json:"last_webhook_type,omitempty"`
+	LastWebhookDetail         string `json:"last_webhook_detail,omitempty"`
+	LastReconcileStartedAt    string `json:"last_reconcile_started_at,omitempty"`
+	LastReconcileFinishedAt   string `json:"last_reconcile_finished_at,omitempty"`
+	LastSuccessfulReconcileAt string `json:"last_successful_reconcile_at,omitempty"`
+	LastReconcileError        string `json:"last_reconcile_error,omitempty"`
 }
 
 // New creates a Daemon with all subsystems wired.
@@ -54,19 +87,25 @@ func New(
 		log = slog.Default()
 	}
 	return &Daemon{
-		cfg:        cfg,
-		reconciler: reconciler,
-		ci:         ci,
-		metrics:    metrics,
-		runtime:    runtime,
-		log:        log,
-		triggerCh:  make(chan struct{}, 1),
+		cfg:          cfg,
+		reconciler:   reconciler,
+		ci:           ci,
+		metrics:      metrics,
+		runtime:      runtime,
+		log:          log,
+		triggerCh:    make(chan struct{}, 1),
+		debouncer:    newDebouncer(),
+		lifecycleCtx: context.Background(),
 	}
 }
 
 // Run starts all subsystems and blocks until ctx is cancelled.
 func (d *Daemon) Run(ctx context.Context) error {
 	var wg sync.WaitGroup
+
+	d.mu.Lock()
+	d.lifecycleCtx = ctx
+	d.mu.Unlock()
 
 	// Reconciler loop.
 	wg.Add(1)
@@ -107,6 +146,15 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 // Trigger requests an immediate reconcile (called by webhook handler).
 func (d *Daemon) Trigger() {
+	d.mu.Lock()
+	d.triggerSeq++
+	running := d.reconcileRunning
+	d.mu.Unlock()
+
+	if running {
+		return
+	}
+
 	select {
 	case d.triggerCh <- struct{}{}:
 	default:
@@ -138,14 +186,156 @@ func (d *Daemon) reconcileLoop(ctx context.Context) {
 
 // doReconcile runs a single reconcile pass with mutex protection.
 func (d *Daemon) doReconcile(ctx context.Context) {
-	if !d.mu.TryLock() {
+	d.mu.Lock()
+	if d.reconcileRunning {
+		d.mu.Unlock()
 		d.log.Debug("reconcile already running, skipping")
 		return
 	}
+	d.reconcileRunning = true
+	d.mu.Unlock()
+
+	for {
+		if ctx.Err() != nil {
+			d.mu.Lock()
+			d.reconcileRunning = false
+			d.mu.Unlock()
+			return
+		}
+
+		d.drainTriggerSignals()
+
+		startedAt := time.Now().UTC()
+
+		d.mu.Lock()
+		startSeq := d.triggerSeq
+		d.lastReconcileStartedAt = startedAt
+		d.mu.Unlock()
+
+		d.drainTriggerSignals()
+
+		if ctx.Err() != nil {
+			d.mu.Lock()
+			d.reconcileRunning = false
+			d.mu.Unlock()
+			return
+		}
+
+		err := d.reconciler.Reconcile(ctx)
+		finishedAt := time.Now().UTC()
+
+		d.mu.Lock()
+		d.reconcileRuns++
+		d.lastReconcileFinishedAt = finishedAt
+		if err != nil {
+			d.reconcileFailures++
+			d.lastReconcileError = err.Error()
+		} else {
+			d.lastSuccessfulReconcileAt = finishedAt
+			d.lastReconcileError = ""
+		}
+		rerun := d.triggerSeq != startSeq && ctx.Err() == nil
+		if !rerun {
+			d.reconcileRunning = false
+		}
+		d.mu.Unlock()
+
+		if err != nil {
+			d.log.Error("reconcile failed", "error", err)
+		}
+		if !rerun {
+			return
+		}
+
+		d.log.Info("reconcile rerun requested")
+	}
+}
+
+func (d *Daemon) drainTriggerSignals() {
+	for {
+		select {
+		case <-d.triggerCh:
+		default:
+			return
+		}
+	}
+}
+
+func (d *Daemon) recordWebhook(eventType string, event *domain.WebhookEvent) {
+	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if err := d.reconciler.Reconcile(ctx); err != nil {
-		d.log.Error("reconcile failed", "error", err)
+	d.lastWebhookAt = time.Now().UTC()
+	d.lastWebhookType = eventType
+	if event != nil {
+		d.lastWebhookDetail = event.Detail
+	} else {
+		d.lastWebhookDetail = ""
+	}
+}
+
+func (d *Daemon) snapshotStatus() statusSnapshot {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return statusSnapshot{
+		PollInterval:              d.cfg.PollInterval.String(),
+		WebhookEnabled:            d.cfg.WebhookEnabled,
+		MetricsEnabled:            d.cfg.MetricsEnabled,
+		ReconcileRunning:          d.reconcileRunning,
+		TriggerSequence:           d.triggerSeq,
+		ReconcileRuns:             d.reconcileRuns,
+		ReconcileFailures:         d.reconcileFailures,
+		LastWebhookAt:             formatStatusTime(d.lastWebhookAt),
+		LastWebhookType:           d.lastWebhookType,
+		LastWebhookDetail:         d.lastWebhookDetail,
+		LastReconcileStartedAt:    formatStatusTime(d.lastReconcileStartedAt),
+		LastReconcileFinishedAt:   formatStatusTime(d.lastReconcileFinishedAt),
+		LastSuccessfulReconcileAt: formatStatusTime(d.lastSuccessfulReconcileAt),
+		LastReconcileError:        d.lastReconcileError,
+	}
+}
+
+func (d *Daemon) currentLifecycleContext() context.Context {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.lifecycleCtx == nil {
+		return context.Background()
+	}
+	return d.lifecycleCtx
+}
+
+func formatStatusTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339Nano)
+}
+
+func (d *Daemon) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	if r.Method != http.MethodHead {
+		w.Write([]byte("ok"))
+	}
+}
+
+func (d *Daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if err := json.NewEncoder(w).Encode(d.snapshotStatus()); err != nil {
+		http.Error(w, "status encode error", http.StatusInternalServerError)
 	}
 }
 

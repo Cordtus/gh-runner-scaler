@@ -45,9 +45,11 @@ clone template -> start -> wait for boot (90s max)
 
 Deregistration is belt-and-suspenders: `config.sh remove` followed by a GitHub API DELETE.
 
-**Webhook** is the primary event driver. `workflow_job.queued` triggers the scaler within 2 seconds (debounced). `push` events to tracked repos trigger cache volume syncs via `lxc exec` on a running container when the push targets that repo's default branch.
+**Webhook** is the primary event driver. `workflow_job.queued` and `workflow_job.completed` events trigger the scaler within 2 seconds (debounced). `push` events to tracked repos trigger cache volume syncs via `lxc exec` on a running container when the push targets that repo's default branch.
 
 **Poll loop** runs every `poll_interval` as a safety net in case a webhook is missed.
+
+The listener also exposes additive read-only health endpoints: `GET /healthz` returns `200 OK`, and `GET /statusz` returns JSON with the latest webhook and reconcile timestamps plus current reconcile state.
 
 ---
 
@@ -455,7 +457,7 @@ Import `deploy/grafana-dashboard.json` into Grafana. Requires a Loki datasource 
 
 **Idle timeout**: `idle_timeout = "300s"` balances warm-runner availability for bursty workloads against resource consumption.
 
-**Concurrency**: All three subsystems run as goroutines in one process. A channel-based trigger with `time.AfterFunc` debounce replaces the bash flock + systemd timer approach. `sync.Mutex` with `TryLock` prevents concurrent reconciles -- if one is running, the next trigger is skipped (correct because the running pass already sees the latest state).
+**Concurrency**: All three subsystems run as goroutines in one process. A channel-based trigger with `time.AfterFunc` debounce replaces the bash flock + systemd timer approach. The daemon still allows only one reconcile at a time, but webhook-triggered demand is tracked while that reconcile runs so another pass starts immediately afterward instead of waiting for the next poll tick.
 
 **Orphan detection**: Containers matching the auto-scale prefix but with no registered GitHub runner are cleaned up immediately. This catches containers left behind by crashed scalers, failed `config.sh`, or manual intervention.
 

@@ -18,6 +18,8 @@ const maxWebhookBodyBytes = 1 << 20
 // runWebhookServer starts the HTTP webhook listener and blocks until ctx is cancelled.
 func (d *Daemon) runWebhookServer(ctx context.Context) {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", d.handleHealth)
+	mux.HandleFunc("/statusz", d.handleStatus)
 	mux.HandleFunc("/", d.handleWebhook)
 
 	addr := fmt.Sprintf(":%d", d.cfg.WebhookPort)
@@ -45,24 +47,66 @@ func (d *Daemon) runWebhookServer(ctx context.Context) {
 }
 
 // debouncer manages per-key debounced triggers.
-type debouncer struct {
-	mu     sync.Mutex
-	timers map[string]*time.Timer
+type debounceEntry struct {
+	generation uint64
+	timer      *time.Timer
 }
 
-var webhookDebouncer = &debouncer{
-	timers: make(map[string]*time.Timer),
+type debouncer struct {
+	mu     sync.Mutex
+	timers map[string]*debounceEntry
+}
+
+func newDebouncer() *debouncer {
+	return &debouncer{
+		timers: make(map[string]*debounceEntry),
+	}
 }
 
 // schedule queues fn to run after delay, resetting on rapid calls with the same key.
-func (db *debouncer) schedule(key string, delay time.Duration, fn func()) {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-
-	if existing, ok := db.timers[key]; ok {
-		existing.Stop()
+func (db *debouncer) schedule(ctx context.Context, key string, delay time.Duration, fn func()) {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	db.timers[key] = time.AfterFunc(delay, fn)
+	if delay < 0 {
+		delay = 0
+	}
+
+	db.mu.Lock()
+	entry, ok := db.timers[key]
+	if !ok {
+		entry = &debounceEntry{}
+		db.timers[key] = entry
+	}
+	entry.generation++
+	generation := entry.generation
+	if entry.timer != nil {
+		entry.timer.Stop()
+	}
+	var timer *time.Timer
+	timer = time.AfterFunc(delay, func() {
+		db.mu.Lock()
+		current, ok := db.timers[key]
+		if !ok || current.generation != generation {
+			db.mu.Unlock()
+			return
+		}
+		delete(db.timers, key)
+		db.mu.Unlock()
+
+		if ctx.Err() == nil {
+			fn()
+		}
+
+		db.mu.Lock()
+		current, ok = db.timers[key]
+		if ok && current.generation == generation {
+			delete(db.timers, key)
+		}
+		db.mu.Unlock()
+	})
+	entry.timer = timer
+	db.mu.Unlock()
 }
 
 func (d *Daemon) handleWebhook(w http.ResponseWriter, r *http.Request) {
@@ -104,17 +148,20 @@ func (d *Daemon) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if event == nil {
+		d.recordWebhook(eventType, nil)
 		// Unrecognized or ignored event type.
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 		return
 	}
 
+	d.recordWebhook(eventType, event)
+
 	// Dispatch.
 	switch event.Type {
 	case domain.EventJobQueued, domain.EventJobCompleted:
 		d.log.Info("webhook event", "detail", event.Detail)
-		webhookDebouncer.schedule("scaler", d.cfg.WebhookDebounce, func() {
+		d.debouncer.schedule(d.currentLifecycleContext(), "scaler", d.cfg.WebhookDebounce, func() {
 			d.Trigger()
 		})
 
@@ -145,8 +192,8 @@ func (d *Daemon) handlePushEvent(event *domain.WebhookEvent) {
 
 	d.log.Info("push to tracked repo", "detail", event.Detail, "cache_path", cachePath)
 
-	webhookDebouncer.schedule("sync-"+repoName, d.cfg.WebhookDebounce, func() {
-		d.syncCacheRepo(context.Background(), event.Repo, branch, cachePath)
+	d.debouncer.schedule(d.currentLifecycleContext(), "sync-"+repoName, d.cfg.WebhookDebounce, func() {
+		d.syncCacheRepo(d.currentLifecycleContext(), event.Repo, branch, cachePath)
 	})
 }
 
