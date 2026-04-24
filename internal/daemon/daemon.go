@@ -39,7 +39,13 @@ type Daemon struct {
 
 	triggerCh chan struct{}
 	mu        sync.Mutex
+
+	workflowMu            sync.Mutex
+	workflowDelivered     map[string]struct{}
+	workflowDeliveredKeys []string
 }
+
+const workflowMetricCacheLimit = 5000
 
 // New creates a Daemon with all subsystems wired.
 func New(
@@ -54,13 +60,14 @@ func New(
 		log = slog.Default()
 	}
 	return &Daemon{
-		cfg:        cfg,
-		reconciler: reconciler,
-		ci:         ci,
-		metrics:    metrics,
-		runtime:    runtime,
-		log:        log,
-		triggerCh:  make(chan struct{}, 1),
+		cfg:               cfg,
+		reconciler:        reconciler,
+		ci:                ci,
+		metrics:           metrics,
+		runtime:           runtime,
+		log:               log,
+		triggerCh:         make(chan struct{}, 1),
+		workflowDelivered: make(map[string]struct{}),
 	}
 }
 
@@ -154,6 +161,10 @@ func (d *Daemon) metricsLoop(ctx context.Context) {
 	ticker := time.NewTicker(d.cfg.MetricsInterval)
 	defer ticker.Stop()
 
+	if ctx.Err() == nil {
+		d.collectAndPush(ctx)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -170,12 +181,11 @@ func (d *Daemon) collectAndPush(ctx context.Context) {
 	runners, err := d.ci.ListRunners(ctx)
 	if err != nil {
 		d.log.Error("failed to list runners for metrics", "error", err)
-		return
-	}
-
-	rm := buildRunnerMetrics(runners, d.ci)
-	if err := d.metrics.PushRunnerMetrics(ctx, rm); err != nil {
-		d.log.Error("failed to push runner metrics", "error", err)
+	} else {
+		rm := buildRunnerMetrics(runners, d.ci)
+		if err := d.metrics.PushRunnerMetrics(ctx, rm); err != nil {
+			d.log.Error("failed to push runner metrics", "error", err)
+		}
 	}
 
 	// Workflow metrics.
@@ -184,8 +194,13 @@ func (d *Daemon) collectAndPush(ctx context.Context) {
 		if err != nil {
 			d.log.Warn("failed to collect workflow metrics", "error", err)
 		} else if len(wm) > 0 {
+			wm = d.filterNewWorkflowMetrics(wm)
+		}
+		if len(wm) > 0 {
 			if err := d.metrics.PushWorkflowMetrics(ctx, wm); err != nil {
 				d.log.Error("failed to push workflow metrics", "error", err)
+			} else {
+				d.markWorkflowMetricsDelivered(wm)
 			}
 		}
 	}
@@ -241,14 +256,79 @@ func buildRunnerMetrics(runners []domain.Runner, ci iface.CIProvider) domain.Run
 	}
 
 	m.IdleRunners = m.TotalRunners - m.BusyRunners
+	m.AvailableOnlineRunners = engine.AvailableRunnerCount(runners)
 	m.OfflineRunners = m.TotalRunners - m.OnlineRunners
 	m.PermanentRunners = m.TotalRunners - m.AutoRunners
-	if m.TotalRunners > 0 {
-		m.UtilizationPct = float64(m.BusyRunners) / float64(m.TotalRunners) * 100
+	if m.OnlineRunners > 0 {
+		m.UtilizationPct = float64(m.BusyRunners) / float64(m.OnlineRunners) * 100
 	}
 	m.Runners = details
 
 	return m
+}
+
+func (d *Daemon) filterNewWorkflowMetrics(runs []domain.WorkflowMetrics) []domain.WorkflowMetrics {
+	d.workflowMu.Lock()
+	defer d.workflowMu.Unlock()
+
+	if d.workflowDelivered == nil {
+		d.workflowDelivered = make(map[string]struct{})
+	}
+
+	fresh := make([]domain.WorkflowMetrics, 0, len(runs))
+	batchSeen := make(map[string]struct{}, len(runs))
+	for _, run := range runs {
+		key := workflowMetricKey(run)
+		if _, seen := d.workflowDelivered[key]; seen {
+			continue
+		}
+		if _, seen := batchSeen[key]; seen {
+			continue
+		}
+		batchSeen[key] = struct{}{}
+		fresh = append(fresh, run)
+	}
+	return fresh
+}
+
+func (d *Daemon) markWorkflowMetricsDelivered(runs []domain.WorkflowMetrics) {
+	d.workflowMu.Lock()
+	defer d.workflowMu.Unlock()
+
+	if d.workflowDelivered == nil {
+		d.workflowDelivered = make(map[string]struct{})
+	}
+
+	for _, run := range runs {
+		key := workflowMetricKey(run)
+		if _, exists := d.workflowDelivered[key]; exists {
+			continue
+		}
+		d.workflowDelivered[key] = struct{}{}
+		d.workflowDeliveredKeys = append(d.workflowDeliveredKeys, key)
+	}
+
+	for len(d.workflowDeliveredKeys) > workflowMetricCacheLimit {
+		oldest := d.workflowDeliveredKeys[0]
+		d.workflowDeliveredKeys = d.workflowDeliveredKeys[1:]
+		delete(d.workflowDelivered, oldest)
+	}
+}
+
+func workflowMetricKey(run domain.WorkflowMetrics) string {
+	if run.RunID != 0 {
+		return fmt.Sprintf("%d:%d", run.RunID, run.RunAttempt)
+	}
+	return fmt.Sprintf(
+		"%s|%s|%d|%s|%s|%s|%d",
+		run.Repo,
+		run.Workflow,
+		run.RunNumber,
+		run.Branch,
+		run.Event,
+		run.Conclusion,
+		run.DurationS,
+	)
 }
 
 // unused import guard

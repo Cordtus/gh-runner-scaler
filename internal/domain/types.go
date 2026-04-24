@@ -82,26 +82,30 @@ type RunnerDetail struct {
 // RunnerMetrics is the runner pool state pushed to the metrics backend.
 // JSON field names must match the Grafana dashboard queries exactly.
 type RunnerMetrics struct {
-	TotalRunners     int            `json:"total_runners"`
-	BusyRunners      int            `json:"busy_runners"`
-	IdleRunners      int            `json:"idle_runners"`
-	OnlineRunners    int            `json:"online_runners"`
-	OfflineRunners   int            `json:"offline_runners"`
-	AutoRunners      int            `json:"auto_runners"`
-	PermanentRunners int            `json:"permanent_runners"`
-	UtilizationPct   float64        `json:"utilization_pct"`
-	Runners          []RunnerDetail `json:"runners"`
+	TotalRunners           int            `json:"total_runners"`
+	BusyRunners            int            `json:"busy_runners"`
+	IdleRunners            int            `json:"idle_runners"`
+	AvailableOnlineRunners int            `json:"available_online_runners"`
+	OnlineRunners          int            `json:"online_runners"`
+	OfflineRunners         int            `json:"offline_runners"`
+	AutoRunners            int            `json:"auto_runners"`
+	PermanentRunners       int            `json:"permanent_runners"`
+	UtilizationPct         float64        `json:"utilization_pct"`
+	Runners                []RunnerDetail `json:"runners"`
 }
 
 // WorkflowMetrics captures a single completed workflow run.
 type WorkflowMetrics struct {
-	Repo       string `json:"repo"`
-	Workflow   string `json:"workflow"`
-	Conclusion string `json:"conclusion"`
-	DurationS  int    `json:"duration_s"`
-	RunNumber  int    `json:"run_number"`
-	Event      string `json:"event"`
-	Branch     string `json:"branch"`
+	RunID       int64  `json:"run_id,omitempty"`
+	RunAttempt  int    `json:"run_attempt,omitempty"`
+	Repo        string `json:"repo"`
+	Workflow    string `json:"workflow"`
+	Conclusion  string `json:"conclusion"`
+	DurationS   int    `json:"duration_s"`
+	RunNumber   int    `json:"run_number"`
+	Event       string `json:"event"`
+	Branch      string `json:"branch"`
+	CompletedAt string `json:"completed_at,omitempty"`
 }
 
 // HostMetrics captures container and storage pool state.

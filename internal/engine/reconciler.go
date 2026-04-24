@@ -69,7 +69,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 
 	// 2. Build snapshot.
 	snap := buildSnapshot(runners, r.cfg.Prefix)
-	availableOnline := availableRunnerCount(runners)
+	availableOnline := AvailableRunnerCount(runners)
 	r.log.Info("runner state",
 		"total", snap.Total, "busy", snap.Busy, "idle", snap.Idle,
 		"auto", snap.Auto, "permanent", snap.Permanent, "available_online", availableOnline,
@@ -337,7 +337,8 @@ func hasRunner(containerName string, runners []domain.Runner) bool {
 	return false
 }
 
-func availableRunnerCount(runners []domain.Runner) int {
+// AvailableRunnerCount returns the number of runners that are both online and idle.
+func AvailableRunnerCount(runners []domain.Runner) int {
 	count := 0
 	for _, r := range runners {
 		if r.Status == "online" && !r.Busy {

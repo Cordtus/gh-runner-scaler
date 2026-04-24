@@ -152,15 +152,24 @@ func (p *Provider) ListRecentWorkflowRuns(ctx context.Context, perRepo int) ([]d
 			if !created.IsZero() && !updated.IsZero() {
 				durationS = int(updated.Time.Sub(created.Time).Seconds())
 			}
+			completedAt := ""
+			if !updated.IsZero() {
+				completedAt = updated.Time.UTC().Format(time.RFC3339)
+			} else if !created.IsZero() {
+				completedAt = created.Time.UTC().Format(time.RFC3339)
+			}
 
 			results = append(results, domain.WorkflowMetrics{
-				Repo:       repo,
-				Workflow:   run.GetName(),
-				Conclusion: run.GetConclusion(),
-				DurationS:  durationS,
-				RunNumber:  run.GetRunNumber(),
-				Event:      run.GetEvent(),
-				Branch:     run.GetHeadBranch(),
+				RunID:       run.GetID(),
+				RunAttempt:  run.GetRunAttempt(),
+				Repo:        repo,
+				Workflow:    run.GetName(),
+				Conclusion:  run.GetConclusion(),
+				DurationS:   durationS,
+				RunNumber:   run.GetRunNumber(),
+				Event:       run.GetEvent(),
+				Branch:      run.GetHeadBranch(),
+				CompletedAt: completedAt,
 			})
 		}
 	}

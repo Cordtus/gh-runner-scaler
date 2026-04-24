@@ -403,6 +403,25 @@ level=INFO msg="webhook server listening" addr=:9876
 level=INFO msg="runner state" total=1 busy=0 idle=1 auto=0 permanent=1
 ```
 
+### Quick update on the server
+
+After a `git pull` on the server checkout, run:
+
+```bash
+./deploy/update-server.sh
+```
+
+The script rebuilds the binary from the current checkout, installs the binary and systemd unit, reloads systemd, and restarts `gh-runner-scaler.service`. It does not overwrite an existing `/etc/gh-runner-scaler/config.toml` or `/etc/gh-runner-scaler/env`.
+
+Before you use it, make sure these runtime files already exist:
+
+```bash
+sudo test -f /etc/gh-runner-scaler/config.toml
+sudo test -f /etc/gh-runner-scaler/env
+```
+
+If `/etc/gh-runner-scaler/config.toml` is missing but the repo checkout has a `config.toml`, the script will install that once. If either file is still missing, the script stops before touching systemd so it does not restart the service into a broken state.
+
 ### One-shot test
 
 Verify LXD and GitHub connectivity before enabling the daemon:
@@ -448,10 +467,10 @@ gh-runner-scaler version     # print version
 
 Import `deploy/grafana-dashboard.json` into Grafana. Requires a Loki datasource receiving metrics from the scaler. Shows:
 
-- Runner pool state (total, busy, idle, auto-scaled)
+- Runner capacity health (total, available online, busy, offline, auto-scaled)
 - Utilization over time
-- Workflow run durations and outcomes
-- Container counts and storage pool usage
+- Recent completed workflow runs with outcome, duration, branch, and event
+- Host-wide container counts and cache pool usage
 
 ---
 

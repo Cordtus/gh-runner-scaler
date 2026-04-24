@@ -59,7 +59,11 @@ func (b *Backend) PushWorkflowMetrics(ctx context.Context, runs []domain.Workflo
 		"service": "workflow-metrics",
 		"org":     b.org,
 	}
-	return b.push(ctx, labels, runs)
+	entries := make([]any, 0, len(runs))
+	for _, run := range runs {
+		entries = append(entries, run)
+	}
+	return b.pushEntries(ctx, labels, entries)
 }
 
 // PushHostMetrics pushes container and storage pool state.
@@ -83,16 +87,31 @@ type lokiStream struct {
 }
 
 func (b *Backend) push(ctx context.Context, labels map[string]string, data any) error {
-	valueJSON, err := json.Marshal(data)
-	if err != nil {
-		return fmt.Errorf("marshaling metrics: %w", err)
+	return b.pushEntries(ctx, labels, []any{data})
+}
+
+func (b *Backend) pushEntries(ctx context.Context, labels map[string]string, entries []any) error {
+	if len(entries) == 0 {
+		return nil
 	}
 
-	nowNS := strconv.FormatInt(time.Now().UnixNano(), 10)
+	nowNS := time.Now().UnixNano()
+	values := make([][]string, 0, len(entries))
+	for i, entry := range entries {
+		valueJSON, err := json.Marshal(entry)
+		if err != nil {
+			return fmt.Errorf("marshaling metrics: %w", err)
+		}
+		values = append(values, []string{
+			strconv.FormatInt(nowNS+int64(i), 10),
+			string(valueJSON),
+		})
+	}
+
 	payload := lokiPayload{
 		Streams: []lokiStream{{
 			Stream: labels,
-			Values: [][]string{{nowNS, string(valueJSON)}},
+			Values: values,
 		}},
 	}
 
