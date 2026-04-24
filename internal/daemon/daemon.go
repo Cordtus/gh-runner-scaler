@@ -24,7 +24,7 @@ type Config struct {
 	MetricsInterval  time.Duration
 	CollectWorkflows bool
 	CollectHost      bool
-	CachePool        string          // for host metrics
+	CachePool        string            // for host metrics
 	SyncRepos        map[string]string // repo -> cache path
 }
 
@@ -118,6 +118,10 @@ func (d *Daemon) Trigger() {
 func (d *Daemon) reconcileLoop(ctx context.Context) {
 	ticker := time.NewTicker(d.cfg.PollInterval)
 	defer ticker.Stop()
+
+	if ctx.Err() == nil {
+		d.doReconcile(ctx)
+	}
 
 	for {
 		select {

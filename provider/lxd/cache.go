@@ -51,7 +51,7 @@ func (cm *CacheManager) AttachCache(ctx context.Context, containerName string) e
 	if err != nil {
 		return fmt.Errorf("attaching cache to %s: %w", containerName, err)
 	}
-	return op.WaitContext(ctx)
+	return waitOperation(ctx, op)
 }
 
 // SetupCacheSymlinks creates symlinks inside the container mapping standard

@@ -13,6 +13,8 @@ import (
 	"github.com/Cordtus/gh-runner-scaler/internal/domain"
 )
 
+const maxWebhookBodyBytes = 1 << 20
+
 // runWebhookServer starts the HTTP webhook listener and blocks until ctx is cancelled.
 func (d *Daemon) runWebhookServer(ctx context.Context) {
 	mux := http.NewServeMux()
@@ -20,8 +22,13 @@ func (d *Daemon) runWebhookServer(ctx context.Context) {
 
 	addr := fmt.Sprintf(":%d", d.cfg.WebhookPort)
 	server := &http.Server{
-		Addr:    addr,
-		Handler: mux,
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    8 << 10,
 	}
 
 	go func() {
@@ -69,6 +76,9 @@ func (d *Daemon) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	defer r.Body.Close()
+	r.Body = http.MaxBytesReader(w, r.Body, maxWebhookBodyBytes)
 
 	payload, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -118,7 +128,8 @@ func (d *Daemon) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 // handlePushEvent triggers a cache sync if the pushed repo is tracked.
 func (d *Daemon) handlePushEvent(event *domain.WebhookEvent) {
-	if event.Ref != "refs/heads/main" {
+	branch, ok := cacheSyncBranch(event)
+	if !ok {
 		return
 	}
 
@@ -135,13 +146,24 @@ func (d *Daemon) handlePushEvent(event *domain.WebhookEvent) {
 	d.log.Info("push to tracked repo", "detail", event.Detail, "cache_path", cachePath)
 
 	webhookDebouncer.schedule("sync-"+repoName, d.cfg.WebhookDebounce, func() {
-		d.syncCacheRepo(context.Background(), event.Repo, cachePath)
+		d.syncCacheRepo(context.Background(), event.Repo, branch, cachePath)
 	})
+}
+
+func cacheSyncBranch(event *domain.WebhookEvent) (string, bool) {
+	if event == nil || event.DefaultBranch == "" {
+		return "", false
+	}
+	expectedRef := "refs/heads/" + event.DefaultBranch
+	if event.Ref != expectedRef {
+		return "", false
+	}
+	return event.DefaultBranch, true
 }
 
 // syncCacheRepo syncs a dependency repo in the cache volume by exec'ing into
 // an already-running container. Replaces sync-cache-deps.sh.
-func (d *Daemon) syncCacheRepo(ctx context.Context, repo, cachePath string) {
+func (d *Daemon) syncCacheRepo(ctx context.Context, repo, branch, cachePath string) {
 	// Find a running container to exec into.
 	containers, err := d.runtime.ListContainers(ctx, "")
 	if err != nil {
@@ -169,18 +191,18 @@ func (d *Daemon) syncCacheRepo(ctx context.Context, repo, cachePath string) {
 		return
 	}
 
-	script := fmt.Sprintf(
-		"git config --global --add safe.directory '%s' 2>/dev/null; git -C '%s' fetch origin main 2>&1; git -C '%s' reset --hard origin/main 2>&1",
-		cachePath, cachePath, cachePath,
-	)
-
-	_, err = d.runtime.ExecCommand(ctx, target, []string{"bash", "-c", script})
-	if err != nil {
-		d.log.Error("cache sync failed", "repo", repo, "container", target, "error", err)
-		return
+	for _, cmd := range [][]string{
+		{"git", "config", "--global", "--add", "safe.directory", cachePath},
+		{"git", "-C", cachePath, "fetch", "--prune", "origin", branch},
+		{"git", "-C", cachePath, "reset", "--hard", "FETCH_HEAD"},
+	} {
+		if _, err = d.runtime.ExecCommand(ctx, target, cmd); err != nil {
+			d.log.Error("cache sync failed", "repo", repo, "branch", branch, "container", target, "error", err)
+			return
+		}
 	}
 
-	log := d.log.With("repo", repo, "container", target)
+	log := d.log.With("repo", repo, "branch", branch, "container", target)
 	log.Info("cache sync completed")
 }
 
