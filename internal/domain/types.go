@@ -110,11 +110,13 @@ type WorkflowMetrics struct {
 
 // HostMetrics captures container and storage pool state.
 type HostMetrics struct {
-	ContainersRunning int     `json:"containers_running"`
-	ContainersStopped int     `json:"containers_stopped"`
-	CachePoolUsedGB   float64 `json:"cache_pool_used_gb,omitempty"`
-	CachePoolTotalGB  float64 `json:"cache_pool_total_gb,omitempty"`
-	CachePoolPct      float64 `json:"cache_pool_pct,omitempty"`
+	ContainersRunning       int      `json:"containers_running"`
+	ContainersStopped       int      `json:"containers_stopped"`
+	RunnerContainersRunning *int     `json:"runner_containers_running,omitempty"`
+	RunnerContainersStopped *int     `json:"runner_containers_stopped,omitempty"`
+	CachePoolUsedGB         float64  `json:"cache_pool_used_gb,omitempty"`
+	CachePoolTotalGB        float64  `json:"cache_pool_total_gb,omitempty"`
+	CachePoolPct            float64  `json:"cache_pool_pct,omitempty"`
 }
 
 // ContainerState tracks scaler-managed state for a single container.

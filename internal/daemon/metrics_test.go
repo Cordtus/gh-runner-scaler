@@ -144,6 +144,8 @@ func (m *metricsRecorder) PushHostMetrics(_ context.Context, hm domain.HostMetri
 type metricsTestRuntime struct {
 	hostMetrics domain.HostMetrics
 	hostErr     error
+	containers  []domain.Container
+	listErr     error
 }
 
 func (m metricsTestRuntime) CloneFromTemplate(context.Context, string) error {
@@ -171,7 +173,10 @@ func (m metricsTestRuntime) WaitForReady(context.Context, string, []string, time
 }
 
 func (m metricsTestRuntime) ListContainers(context.Context, string) ([]domain.Container, error) {
-	return nil, nil
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
+	return append([]domain.Container(nil), m.containers...), nil
 }
 
 func (m metricsTestRuntime) GetContainerStatus(context.Context, string) (domain.ContainerStatus, error) {
@@ -264,9 +269,13 @@ func TestCollectAndPush_ContinuesWorkflowAndHostMetricsWhenRunnerListFails(t *te
 			ContainersRunning: 3,
 			ContainersStopped: 12,
 		},
+		containers: []domain.Container{
+			{Name: "auto-1", Status: domain.StatusRunning},
+			{Name: "auto-2", Status: domain.StatusStopped},
+		},
 	}
 	daemon := New(
-		Config{CollectWorkflows: true, CollectHost: true, CachePool: "pool9"},
+		Config{Prefix: "auto", CollectWorkflows: true, CollectHost: true, CachePool: "pool9"},
 		nil,
 		ci,
 		backend,
@@ -287,6 +296,55 @@ func TestCollectAndPush_ContinuesWorkflowAndHostMetricsWhenRunnerListFails(t *te
 	}
 	if got := backend.hostBatches[0].ContainersRunning; got != 3 {
 		t.Fatalf("host containers running = %d, want 3", got)
+	}
+	if backend.hostBatches[0].RunnerContainersRunning == nil {
+		t.Fatal("runner containers running = nil, want 1")
+	}
+	if got := *backend.hostBatches[0].RunnerContainersRunning; got != 1 {
+		t.Fatalf("runner containers running = %d, want 1", got)
+	}
+	if backend.hostBatches[0].RunnerContainersStopped == nil {
+		t.Fatal("runner containers stopped = nil, want 1")
+	}
+	if got := *backend.hostBatches[0].RunnerContainersStopped; got != 1 {
+		t.Fatalf("runner containers stopped = %d, want 1", got)
+	}
+}
+
+func TestCollectAndPush_OmitsRunnerContainerSamplesWhenContainerListFails(t *testing.T) {
+	ci := &collectMetricsTestCI{
+		metricsTestCI: metricsTestCI{prefix: "auto"},
+	}
+	backend := &metricsRecorder{}
+	runtime := metricsTestRuntime{
+		hostMetrics: domain.HostMetrics{
+			ContainersRunning: 4,
+			ContainersStopped: 9,
+		},
+		listErr: errors.New("lxc unavailable"),
+	}
+	daemon := New(
+		Config{Prefix: "auto", CollectHost: true, CachePool: "pool9"},
+		nil,
+		ci,
+		backend,
+		runtime,
+		testLogger(),
+	)
+
+	daemon.collectAndPush(context.Background())
+
+	if len(backend.hostBatches) != 1 {
+		t.Fatalf("host batch count = %d, want 1", len(backend.hostBatches))
+	}
+	if got := backend.hostBatches[0].ContainersRunning; got != 4 {
+		t.Fatalf("host containers running = %d, want 4", got)
+	}
+	if backend.hostBatches[0].RunnerContainersRunning != nil {
+		t.Fatalf("runner containers running = %v, want nil", *backend.hostBatches[0].RunnerContainersRunning)
+	}
+	if backend.hostBatches[0].RunnerContainersStopped != nil {
+		t.Fatalf("runner containers stopped = %v, want nil", *backend.hostBatches[0].RunnerContainersStopped)
 	}
 }
 

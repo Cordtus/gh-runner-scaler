@@ -1,0 +1,31 @@
+name: go-cache-load
+
+on:
+  workflow_dispatch:
+    inputs:
+      matrix:
+        description: JSON array of shard ids
+        required: false
+        default: "[1,2,3]"
+      max_parallel:
+        description: Max concurrent jobs
+        required: false
+        default: "3"
+
+jobs:
+  go-cache-load:
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(inputs.max_parallel) }}
+      matrix:
+        shard: ${{ fromJSON(inputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.6"
+      - run: go test ./... -count=1
+      - run: go test ./... -count=1
+      - run: go build ./...

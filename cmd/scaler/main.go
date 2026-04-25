@@ -76,6 +76,7 @@ func runDaemon(args []string) {
 
 	d := daemon.New(
 		daemon.Config{
+			Prefix:           cfg.Scaler.Prefix,
 			PollInterval:     cfg.Scaler.PollInterval.Duration,
 			WebhookEnabled:   cfg.Webhook.Enabled,
 			WebhookPort:      cfg.Webhook.Port,

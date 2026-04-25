@@ -16,6 +16,7 @@ import (
 
 // Config holds daemon-level settings.
 type Config struct {
+	Prefix           string
 	PollInterval     time.Duration
 	WebhookEnabled   bool
 	WebhookPort      int
@@ -223,6 +224,23 @@ func (d *Daemon) collectHostMetrics(ctx context.Context) {
 		if err != nil {
 			d.log.Warn("failed to collect host metrics", "error", err)
 			return
+		}
+		containers, err := d.runtime.ListContainers(ctx, d.cfg.Prefix)
+		if err != nil {
+			d.log.Warn("failed to list runner containers for host metrics", "error", err)
+		} else {
+			running := 0
+			stopped := 0
+			for _, container := range containers {
+				switch container.Status {
+				case domain.StatusRunning:
+					running++
+				case domain.StatusStopped:
+					stopped++
+				}
+			}
+			hm.RunnerContainersRunning = &running
+			hm.RunnerContainersStopped = &stopped
 		}
 		if err := d.metrics.PushHostMetrics(ctx, hm); err != nil {
 			d.log.Error("failed to push host metrics", "error", err)

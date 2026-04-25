@@ -470,7 +470,29 @@ Import `deploy/grafana-dashboard.json` into Grafana. Requires a Loki datasource 
 - Runner capacity health (total, available online, busy, offline, auto-scaled)
 - Utilization over time
 - Recent completed workflow runs with outcome, duration, branch, and event
-- Host-wide container counts and cache pool usage
+- Managed runner container counts and cache pool usage
+
+The exported dashboard currently references the Loki datasource UID
+`grafanacloud-axionic-logs`. If your Grafana stack uses a different Loki
+datasource UID, remap the datasource during import or update the panel
+datasource settings after import.
+
+## Load Testing
+
+The repo includes a reusable load-test harness under `loadtest/`:
+
+- `loadtest/repo-template/` seeds a standalone GitHub Actions repo with
+  queue-burst, Node, Python, Go, and Playwright workflows.
+- `loadtest/create-test-repo.sh` creates that repo locally and can push it to
+  GitHub once `gh` auth is valid.
+- `loadtest/dispatch-load.sh` dispatches repeatable workload profiles with
+  varying concurrency and workload mixes.
+- `loadtest/collect-server-evidence.sh` samples LXC and host resource
+  snapshots during the run and writes the scaler journal when the capture
+  ends.
+
+See `loadtest/README.md` for the recommended sequence, evidence collector
+settings, and workload profiles.
 
 ---
 

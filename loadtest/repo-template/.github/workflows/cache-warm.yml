@@ -1,0 +1,88 @@
+name: cache-warm
+
+on:
+  workflow_dispatch:
+    inputs:
+      matrix:
+        description: JSON array of shard ids
+        required: false
+        default: "[1,2]"
+      max_parallel:
+        description: Max concurrent jobs per workflow
+        required: false
+        default: "2"
+
+jobs:
+  warm-node:
+    runs-on: [self-hosted, linux, x64]
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(inputs.max_parallel) }}
+      matrix:
+        shard: ${{ fromJSON(inputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install --no-audit --no-fund
+      - run: npx tsc --noEmit
+      - run: node scripts/node_workload.mjs "${{ matrix.shard }}" 80 16 1
+
+  warm-python:
+    needs: warm-node
+    runs-on: [self-hosted, linux, x64]
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(inputs.max_parallel) }}
+      matrix:
+        shard: ${{ fromJSON(inputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements.txt
+      - run: python3 scripts/python_workload.py "${{ matrix.shard }}" 80 1800
+
+  warm-go:
+    needs: warm-python
+    runs-on: [self-hosted, linux, x64]
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(inputs.max_parallel) }}
+      matrix:
+        shard: ${{ fromJSON(inputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.6"
+      - run: go test ./... -count=1
+      - run: go build ./...
+
+  warm-browser:
+    needs: warm-go
+    runs-on: [self-hosted, linux, x64]
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(inputs.max_parallel) }}
+      matrix:
+        shard: ${{ fromJSON(inputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install --no-audit --no-fund
+      - run: |
+          python3 -m http.server 4173 --directory web >/tmp/load-lab-http-${{ matrix.shard }}.log 2>&1 &
+          echo $! > /tmp/load-lab-http-${{ matrix.shard }}.pid
+      - run: python3 scripts/wait_for_http.py http://127.0.0.1:4173 20
+      - run: npx playwright test --workers=1
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: /home/runner/.cache/ms-playwright
+      - if: always()
+        run: |
+          kill "$(cat /tmp/load-lab-http-${{ matrix.shard }}.pid)" || true

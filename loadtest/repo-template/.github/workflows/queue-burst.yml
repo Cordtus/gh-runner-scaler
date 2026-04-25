@@ -1,0 +1,30 @@
+name: queue-burst
+
+on:
+  workflow_dispatch:
+    inputs:
+      matrix:
+        description: JSON array of shard ids
+        required: false
+        default: "[1,2,3,4,5,6,7,8]"
+      max_parallel:
+        description: Max concurrent jobs
+        required: false
+        default: "8"
+      sleep_seconds:
+        description: Seconds each burst job should sleep
+        required: false
+        default: "30"
+
+jobs:
+  short-burst:
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(inputs.max_parallel) }}
+      matrix:
+        shard: ${{ fromJSON(inputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/queue_burst.sh "${{ matrix.shard }}" "${{ inputs.sleep_seconds }}"

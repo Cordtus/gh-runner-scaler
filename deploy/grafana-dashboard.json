@@ -701,7 +701,7 @@
       },
       "targets": [
         {
-          "expr": "{job=\"gh-runner-scaler\", service=\"workflow-metrics\"} | json",
+          "expr": "{job=\"gh-runner-scaler\", service=\"workflow-metrics\"}",
           "refId": "A"
         }
       ],
@@ -720,7 +720,12 @@
               "Line": true,
               "Time": true,
               "id": true,
+              "labelTypes": true,
               "labels": true,
+              "spanID": true,
+              "traceID": true,
+              "traceID (field)": true,
+              "detected_level": true,
               "run_attempt": true,
               "run_id": true,
               "tsNs": true
@@ -871,17 +876,17 @@
       },
       "targets": [
         {
-          "expr": "last_over_time({job=\"gh-runner-scaler\", service=\"host-metrics\"} | json containers_running | unwrap containers_running | __error__=\"\" [2m])",
+          "expr": "last_over_time({job=\"gh-runner-scaler\", service=\"host-metrics\"} | json runner_containers_running | unwrap runner_containers_running | __error__=\"\" [2m])",
           "legendFormat": "Running",
           "refId": "A"
         },
         {
-          "expr": "last_over_time({job=\"gh-runner-scaler\", service=\"host-metrics\"} | json containers_stopped | unwrap containers_stopped | __error__=\"\" [2m])",
+          "expr": "last_over_time({job=\"gh-runner-scaler\", service=\"host-metrics\"} | json runner_containers_stopped | unwrap runner_containers_stopped | __error__=\"\" [2m])",
           "legendFormat": "Stopped",
           "refId": "B"
         }
       ],
-      "title": "LXC Containers",
+      "title": "Managed Runner Containers",
       "type": "timeseries"
     },
     {

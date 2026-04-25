@@ -1,0 +1,31 @@
+name: node-cache-load
+
+on:
+  workflow_dispatch:
+    inputs:
+      matrix:
+        description: JSON array of shard ids
+        required: false
+        default: "[1,2,3,4]"
+      max_parallel:
+        description: Max concurrent jobs
+        required: false
+        default: "4"
+
+jobs:
+  node-cache-load:
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(inputs.max_parallel) }}
+      matrix:
+        shard: ${{ fromJSON(inputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install --no-audit --no-fund
+      - run: npx tsc --noEmit
+      - run: node scripts/node_workload.mjs "${{ matrix.shard }}" 220 24 3

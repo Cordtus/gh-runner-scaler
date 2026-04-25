@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Runner Load Lab</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        margin: 24px;
+      }
+      ul {
+        columns: 4;
+      }
+    </style>
+  </head>
+  <body>
+    <h1 id="title">Runner Load Lab</h1>
+    <button id="render">Render Rows</button>
+    <ul id="rows"></ul>
+    <script>
+      const rows = document.getElementById("rows");
+      document.getElementById("render").addEventListener("click", () => {
+        rows.innerHTML = "";
+        for (let index = 0; index < 240; index += 1) {
+          const item = document.createElement("li");
+          item.textContent = `row-${index}`;
+          rows.appendChild(item);
+        }
+      });
+    </script>
+  </body>
+</html>

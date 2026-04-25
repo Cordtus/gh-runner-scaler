@@ -1,0 +1,17 @@
+{
+  "name": "runner-load-lab",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/node_workload.mjs 0 160 24 3",
+    "test:node": "node scripts/node_workload.mjs 0 160 24 2",
+    "test:python": "python3 scripts/python_workload.py 0 180 3000",
+    "test:queue": "bash scripts/queue_burst.sh 0 20",
+    "test:browser": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.58.2",
+    "esbuild": "0.25.4",
+    "typescript": "5.9.3"
+  }
+}
