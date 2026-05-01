@@ -26,6 +26,7 @@ type Config struct {
 	CollectWorkflows bool
 	CollectHost      bool
 	CachePool        string            // for host metrics
+	StateDir         string            // persisted daemon state (workflow metrics dedupe)
 	SyncRepos        map[string]string // repo -> cache path
 }
 
@@ -46,7 +47,10 @@ type Daemon struct {
 	workflowDeliveredKeys []string
 }
 
-const workflowMetricCacheLimit = 5000
+const (
+	workflowMetricCacheLimit    = 20000
+	workflowMetricRunFetchLimit = 20
+)
 
 // New creates a Daemon with all subsystems wired.
 func New(
@@ -60,7 +64,7 @@ func New(
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Daemon{
+	d := &Daemon{
 		cfg:               cfg,
 		reconciler:        reconciler,
 		ci:                ci,
@@ -70,6 +74,8 @@ func New(
 		triggerCh:         make(chan struct{}, 1),
 		workflowDelivered: make(map[string]struct{}),
 	}
+	d.loadWorkflowMetricCache()
+	return d
 }
 
 // Run starts all subsystems and blocks until ctx is cancelled.
@@ -191,7 +197,7 @@ func (d *Daemon) collectAndPush(ctx context.Context) {
 
 	// Workflow metrics.
 	if d.cfg.CollectWorkflows {
-		wm, err := d.ci.ListRecentWorkflowRuns(ctx, 5)
+		wm, err := d.ci.ListRecentWorkflowRuns(ctx, workflowMetricRunFetchLimit)
 		if err != nil {
 			d.log.Warn("failed to collect workflow metrics", "error", err)
 		} else if len(wm) > 0 {
@@ -330,6 +336,9 @@ func (d *Daemon) markWorkflowMetricsDelivered(runs []domain.WorkflowMetrics) {
 		oldest := d.workflowDeliveredKeys[0]
 		d.workflowDeliveredKeys = d.workflowDeliveredKeys[1:]
 		delete(d.workflowDelivered, oldest)
+	}
+	if err := d.persistWorkflowMetricCacheLocked(); err != nil {
+		d.log.Warn("failed to persist workflow metric cache", "error", err)
 	}
 }
 

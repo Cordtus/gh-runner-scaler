@@ -86,6 +86,7 @@ func runDaemon(args []string) {
 			CollectWorkflows: cfg.Metrics.CollectWorkflows,
 			CollectHost:      cfg.Metrics.CollectHost,
 			CachePool:        cfg.Cache.Pool,
+			StateDir:         cfg.State.Filesystem.Dir,
 			SyncRepos:        cfg.Webhook.SyncRepos,
 		},
 		reconciler, ci, metrics, runtime, log,

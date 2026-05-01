@@ -148,9 +148,15 @@ func (p *Provider) ListRecentWorkflowRuns(ctx context.Context, perRepo int) ([]d
 		for _, run := range runs {
 			durationS := 0
 			created := run.GetCreatedAt()
+			started := run.GetRunStartedAt()
 			updated := run.GetUpdatedAt()
-			if !created.IsZero() && !updated.IsZero() {
+			if !started.IsZero() && !updated.IsZero() {
+				durationS = int(updated.Time.Sub(started.Time).Seconds())
+			} else if !created.IsZero() && !updated.IsZero() {
 				durationS = int(updated.Time.Sub(created.Time).Seconds())
+			}
+			if durationS < 0 {
+				durationS = 0
 			}
 			completedAt := ""
 			if !updated.IsZero() {

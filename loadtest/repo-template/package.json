@@ -10,6 +10,7 @@
     "test:browser": "playwright test"
   },
   "devDependencies": {
+    "@types/node": "^20.0.0",
     "@playwright/test": "1.58.2",
     "esbuild": "0.25.4",
     "typescript": "5.9.3"

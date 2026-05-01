@@ -30,7 +30,9 @@ capture_snapshot() {
   snapshot_dir="${OUT_DIR}/snapshots/${timestamp}"
   mkdir -p "${snapshot_dir}"
 
-  run_as_root systemctl --no-pager --full status "${SERVICE_NAME}" > "${snapshot_dir}/systemctl-status.txt"
+  # Keep collecting even if the service is currently failed or inactive.
+  run_as_root systemctl is-active "${SERVICE_NAME}" > "${snapshot_dir}/systemctl-is-active.txt" || true
+  run_as_root systemctl --no-pager --full status "${SERVICE_NAME}" > "${snapshot_dir}/systemctl-status.txt" || true
 
   if command -v lxc >/dev/null 2>&1; then
     run_as_root lxc list --format json > "${snapshot_dir}/lxc-list.json" || true

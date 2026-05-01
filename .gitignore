@@ -9,7 +9,11 @@ config.toml
 gh-runner-scaler
 gh-runner-scaler-linux
 /scaler
+tmp/
 
 # Claude
 CLAUDE.md
 .claude/
+
+# Local agent/runtime scratch
+.codex

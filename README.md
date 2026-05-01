@@ -22,7 +22,9 @@ provider/
   fsstate/                    -- StateStore via filesystem timestamps
 deploy/
   systemd/gh-runner-scaler.service
-  grafana-dashboard.json
+  grafana-dashboard.json          -- repo-maintained dashboard baseline
+  grafana-dashboard-old.json      -- exported/reference dashboard snapshot
+loadtest/                         -- synthetic workload repo + capacity tools
 config.example.toml
 ```
 
@@ -317,7 +319,7 @@ Filesystem-specific: `[state.filesystem]`
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `dir` | `.state` | Directory for per-container timestamp files |
+| `dir` | `.state` | Directory for per-container timestamp files and workflow metric cache |
 
 For production, use an absolute path like `/var/lib/gh-runner-scaler/state`.
 
@@ -412,6 +414,7 @@ After a `git pull` on the server checkout, run:
 ```
 
 The script rebuilds the binary from the current checkout, installs the binary and systemd unit, reloads systemd, and restarts `gh-runner-scaler.service`. It does not overwrite an existing `/etc/gh-runner-scaler/config.toml` or `/etc/gh-runner-scaler/env`.
+It requires a working Go toolchain on the server because it builds from the checked-out source rather than downloading a release artifact.
 
 Before you use it, make sure these runtime files already exist:
 
@@ -446,7 +449,7 @@ sudo -E /usr/local/bin/gh-runner-scaler daemon --config /etc/gh-runner-scaler/co
 /etc/gh-runner-scaler/config.toml        -- configuration
 /etc/gh-runner-scaler/env                -- secrets (mode 600)
 /etc/systemd/system/gh-runner-scaler.service -- systemd unit
-/var/lib/gh-runner-scaler/state/         -- container state files
+/var/lib/gh-runner-scaler/state/         -- container state files + workflow metric cache
 ```
 
 ---
@@ -465,7 +468,14 @@ gh-runner-scaler version     # print version
 
 ## Grafana Dashboard
 
-Import `deploy/grafana-dashboard.json` into Grafana. Requires a Loki datasource receiving metrics from the scaler. Shows:
+Two dashboard artifacts live under `deploy/`:
+
+- `deploy/grafana-dashboard.json`: repo-maintained baseline dashboard aligned to the current metrics contract.
+- `deploy/grafana-dashboard-old.json`: exported/reference dashboard snapshot using Grafana's newer `elements` + `GridLayout` schema.
+
+Treat `deploy/grafana-dashboard.json` as the source of truth for the metrics contract in this repo. Keep `deploy/grafana-dashboard-old.json` for export/schema comparisons or for operators who specifically want the fuller Grafana-export shape.
+
+Both dashboards require a Loki datasource receiving metrics from the scaler. They show:
 
 - Runner capacity health (total, available online, busy, offline, auto-scaled)
 - Utilization over time
@@ -490,6 +500,13 @@ The repo includes a reusable load-test harness under `loadtest/`:
 - `loadtest/collect-server-evidence.sh` samples LXC and host resource
   snapshots during the run and writes the scaler journal when the capture
   ends.
+
+The helper scripts assume:
+
+- local Git identity is configured before seeding a repo (`git config --global user.name` / `user.email`)
+- the target repo's default branch already contains the workflow files you want to dispatch
+- browser profiles run against a template that already has the pinned Playwright browser bundle in `/home/runner/.cache/ms-playwright`
+- server-side evidence collection runs on the scaler host with root or `sudo`
 
 See `loadtest/README.md` for the recommended sequence, evidence collector
 settings, and workload profiles.

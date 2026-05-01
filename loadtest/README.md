@@ -34,6 +34,22 @@ gh auth login
 
 3. The scaler host already running the latest `gh-runner-scaler` build.
 
+4. Local Git identity configured on the machine where you will seed the repo:
+
+```bash
+git config --global user.name "Your Name"
+git config --global user.email "you@example.com"
+```
+
+5. The test repo's default branch must already contain the workflow files you
+   want to dispatch. `dispatch-load.sh` uses `gh workflow run` without `--ref`,
+   so GitHub dispatches the default-branch version of each workflow.
+
+6. Browser profiles assume the runner template already has the pinned
+   Playwright browser bundle installed at `/home/runner/.cache/ms-playwright`.
+   If you are testing Axionic workloads, follow the main README's template
+   bootstrap step for `playwright@1.58.2 install --with-deps chromium` first.
+
 ## Recommended Test Sequence
 
 1. Seed the test repo:
@@ -42,10 +58,10 @@ gh auth login
 ./loadtest/create-test-repo.sh Axionic-Labs/runner-load-lab /tmp/runner-load-lab --push
 ```
 
-2. Start server-side evidence collection on the scaler host. It samples host
-   state every 15 seconds for 15 minutes by default, then writes the scaler
-   journal once when it exits. Set `DURATION_SECONDS=0` if you want it to keep
-   running until `Ctrl+C`:
+2. Start server-side evidence collection on the scaler host with root or
+   `sudo`. It samples host state every 15 seconds for 15 minutes by default,
+   then writes the scaler journal once when it exits. Set
+   `DURATION_SECONDS=0` if you want it to keep running until `Ctrl+C`:
 
 ```bash
 ./loadtest/collect-server-evidence.sh
@@ -86,6 +102,8 @@ gh auth login
 - Set `DURATION_SECONDS=0` to keep sampling until you stop the script.
 - Snapshot data is written under `snapshots/`; the scaler journal is written to
   `journalctl.log` when the script exits.
+- Each snapshot records both `systemctl status` and `systemctl is-active` so a
+  failed service still leaves useful evidence instead of aborting the capture.
 
 ## What To Look For
 

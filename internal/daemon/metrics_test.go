@@ -245,6 +245,63 @@ func TestCollectAndPush_DeduplicatesRepeatedWorkflowMetrics(t *testing.T) {
 	}
 }
 
+func TestCollectAndPush_PersistsWorkflowDedupeAcrossDaemonRestart(t *testing.T) {
+	stateDir := t.TempDir()
+	run := domain.WorkflowMetrics{
+		RunID:      101,
+		RunAttempt: 2,
+		Repo:       "repo-a",
+		Workflow:   "build",
+		Conclusion: "success",
+		DurationS:  90,
+		RunNumber:  7,
+		Event:      "push",
+		Branch:     "main",
+	}
+
+	firstCI := &collectMetricsTestCI{
+		metricsTestCI: metricsTestCI{prefix: "auto"},
+		workflowRunsBatches: [][]domain.WorkflowMetrics{
+			{run},
+		},
+	}
+	firstBackend := &metricsRecorder{}
+	first := New(
+		Config{CollectWorkflows: true, StateDir: stateDir},
+		nil,
+		firstCI,
+		firstBackend,
+		nil,
+		testLogger(),
+	)
+	first.collectAndPush(context.Background())
+
+	if len(firstBackend.workflowBatches) != 1 {
+		t.Fatalf("first workflow batch count = %d, want 1", len(firstBackend.workflowBatches))
+	}
+
+	secondCI := &collectMetricsTestCI{
+		metricsTestCI: metricsTestCI{prefix: "auto"},
+		workflowRunsBatches: [][]domain.WorkflowMetrics{
+			{run},
+		},
+	}
+	secondBackend := &metricsRecorder{}
+	second := New(
+		Config{CollectWorkflows: true, StateDir: stateDir},
+		nil,
+		secondCI,
+		secondBackend,
+		nil,
+		testLogger(),
+	)
+	second.collectAndPush(context.Background())
+
+	if len(secondBackend.workflowBatches) != 0 {
+		t.Fatalf("second workflow batch count = %d, want 0", len(secondBackend.workflowBatches))
+	}
+}
+
 func TestCollectAndPush_ContinuesWorkflowAndHostMetricsWhenRunnerListFails(t *testing.T) {
 	run := domain.WorkflowMetrics{
 		Repo:       "repo-a",

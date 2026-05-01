@@ -82,15 +82,16 @@ func TestListRecentWorkflowRuns_BatchesReposAndCachesRepoList(t *testing.T) {
 			writeJSON(t, w, map[string]any{
 				"total_count": 1,
 				"workflow_runs": []map[string]any{{
-					"id":          101,
-					"run_attempt": 2,
-					"name":        "build",
-					"conclusion":  "success",
-					"run_number":  7,
-					"event":       "push",
-					"head_branch": "main",
-					"created_at":  "2026-04-19T12:00:00Z",
-					"updated_at":  "2026-04-19T12:01:30Z",
+					"id":             101,
+					"run_attempt":    2,
+					"name":           "build",
+					"conclusion":     "success",
+					"run_number":     7,
+					"event":          "push",
+					"head_branch":    "main",
+					"created_at":     "2026-04-19T12:00:00Z",
+					"run_started_at": "2026-04-19T12:01:00Z",
+					"updated_at":     "2026-04-19T12:01:30Z",
 				}},
 			})
 		default:
@@ -113,6 +114,9 @@ func TestListRecentWorkflowRuns_BatchesReposAndCachesRepoList(t *testing.T) {
 	}
 	if runs[0].RunAttempt != 2 {
 		t.Fatalf("expected run attempt 2, got %d", runs[0].RunAttempt)
+	}
+	if runs[0].DurationS != 30 {
+		t.Fatalf("expected duration to use run_started_at, got %d", runs[0].DurationS)
 	}
 	if runs[0].CompletedAt != "2026-04-19T12:01:30Z" {
 		t.Fatalf("expected completed_at to match updated_at, got %q", runs[0].CompletedAt)

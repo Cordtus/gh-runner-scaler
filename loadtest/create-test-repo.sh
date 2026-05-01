@@ -65,6 +65,13 @@ if [[ -e "${OUTPUT_DIR}" ]]; then
   exit 1
 fi
 
+if ! git config user.name >/dev/null 2>&1 || ! git config user.email >/dev/null 2>&1; then
+  echo "error: git user.name and user.email must be configured before seeding a repo" >&2
+  echo "hint: git config --global user.name \"Your Name\"" >&2
+  echo "hint: git config --global user.email \"you@example.com\"" >&2
+  exit 1
+fi
+
 mkdir -p "$(dirname "${OUTPUT_DIR}")"
 cp -a "${TEMPLATE_DIR}/." "${OUTPUT_DIR}"
 
