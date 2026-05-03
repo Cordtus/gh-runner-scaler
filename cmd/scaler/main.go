@@ -56,6 +56,15 @@ func runDaemon(args []string) {
 		os.Exit(1)
 	}
 
+	logStore, err := daemon.NewLogStore(cfg.State.Filesystem.Dir)
+	if err != nil {
+		log.Error("failed to initialize log store", "error", err)
+		os.Exit(1)
+	}
+	log = slog.New(daemon.NewLogHandler(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}), logStore))
+
 	runtime, cache, ci, metrics, state, err := wireProviders(cfg, log)
 	if err != nil {
 		log.Error("failed to initialize providers", "error", err)
@@ -81,6 +90,7 @@ func runDaemon(args []string) {
 			WebhookEnabled:   cfg.Webhook.Enabled,
 			WebhookPort:      cfg.Webhook.Port,
 			WebhookDebounce:  cfg.Webhook.Debounce.Duration,
+			LogsToken:        cfg.Webhook.LogsToken,
 			MetricsEnabled:   cfg.Metrics.Enabled,
 			MetricsInterval:  cfg.Metrics.Interval.Duration,
 			CollectWorkflows: cfg.Metrics.CollectWorkflows,
@@ -89,7 +99,7 @@ func runDaemon(args []string) {
 			StateDir:         cfg.State.Filesystem.Dir,
 			SyncRepos:        cfg.Webhook.SyncRepos,
 		},
-		reconciler, ci, metrics, runtime, log,
+		reconciler, ci, metrics, runtime, logStore, log,
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -115,6 +125,15 @@ func runReconcile(args []string) {
 		log.Error("failed to load config", "error", err)
 		os.Exit(1)
 	}
+
+	logStore, err := daemon.NewLogStore(cfg.State.Filesystem.Dir)
+	if err != nil {
+		log.Error("failed to initialize log store", "error", err)
+		os.Exit(1)
+	}
+	log = slog.New(daemon.NewLogHandler(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}), logStore))
 
 	runtime, cache, ci, _, state, err := wireProviders(cfg, log)
 	if err != nil {

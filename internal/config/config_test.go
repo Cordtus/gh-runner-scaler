@@ -63,6 +63,29 @@ func TestValidate_WorkflowRepoBatchSizeMustBeNonNegative(t *testing.T) {
 	}
 }
 
+func TestApplyEnvOverrides_UsesDedicatedLogsTokenWhenPresent(t *testing.T) {
+	t.Setenv("GH_WEBHOOK_SECRET", "webhook-secret")
+	t.Setenv("GH_SCALER_LOG_TOKEN", "logs-token")
+
+	cfg := defaults()
+	applyEnvOverrides(cfg)
+
+	if cfg.Webhook.LogsToken != "logs-token" {
+		t.Fatalf("expected dedicated logs token, got %q", cfg.Webhook.LogsToken)
+	}
+}
+
+func TestApplyEnvOverrides_FallsBackToWebhookSecretForLogsToken(t *testing.T) {
+	t.Setenv("GH_WEBHOOK_SECRET", "webhook-secret")
+
+	cfg := defaults()
+	applyEnvOverrides(cfg)
+
+	if cfg.Webhook.LogsToken != "webhook-secret" {
+		t.Fatalf("expected webhook secret fallback, got %q", cfg.Webhook.LogsToken)
+	}
+}
+
 func validConfig() *Config {
 	cfg := defaults()
 	cfg.CI.Org = "test-org"

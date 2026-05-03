@@ -40,6 +40,8 @@ target = "/home/runner/.cache/pip"
 [[cache.symlinks]]
 source = "/cache/tool-cache"
 target = "/opt/hostedtoolcache"
+# When this target is present, the scaler also writes AGENT_TOOLSDIRECTORY and
+# RUNNER_TOOL_CACHE into /home/runner/.env before installing the runner service.
 
 [[cache.symlinks]]
 source = "/cache/axionic-ui"
@@ -58,6 +60,8 @@ org = "Axionic-Labs"
 enabled = true
 port = 9876
 debounce = "2s"
+# Optional: set GH_SCALER_LOG_TOKEN env var to protect GET /logs with a
+# dedicated bearer token. If unset, the daemon falls back to GH_WEBHOOK_SECRET.
 
 [webhook.sync_repos]
 # Pushes to each repo's default branch trigger cache syncs for these repos.

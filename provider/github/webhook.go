@@ -4,9 +4,10 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"strings"
+
+	gh "github.com/google/go-github/v74/github"
 
 	"github.com/Cordtus/gh-runner-scaler/internal/domain"
 )
@@ -72,59 +73,87 @@ func (p *Provider) ParseWebhookEvent(eventType string, payload []byte) (*domain.
 }
 
 func parseWorkflowJob(payload []byte) (*domain.WebhookEvent, error) {
-	var event struct {
-		Action      string `json:"action"`
-		WorkflowJob struct {
-			Name string `json:"name"`
-		} `json:"workflow_job"`
-		Repository struct {
-			FullName string `json:"full_name"`
-		} `json:"repository"`
-	}
-	if err := json.Unmarshal(payload, &event); err != nil {
+	parsed, err := gh.ParseWebHook("workflow_job", payload)
+	if err != nil {
 		return nil, fmt.Errorf("parsing workflow_job: %w", err)
+	}
+	event, ok := parsed.(*gh.WorkflowJobEvent)
+	if !ok {
+		return nil, fmt.Errorf("parsing workflow_job: unexpected payload type %T", parsed)
 	}
 
 	var evType domain.WebhookEventType
-	switch event.Action {
+	switch event.GetAction() {
 	case "queued":
 		evType = domain.EventJobQueued
 	case "completed":
 		evType = domain.EventJobCompleted
+	case "in_progress":
+		evType = domain.EventUnknown
 	default:
-		return nil, nil // other actions (in_progress, etc.) are ignored
+		return nil, nil // other actions are ignored
+	}
+
+	job := event.GetWorkflowJob()
+	commit := job.GetHeadSHA()
+	shortCommit := commit
+	if len(shortCommit) > 7 {
+		shortCommit = shortCommit[:7]
+	}
+	detail := fmt.Sprintf(
+		"%s: %s / %s (%s)",
+		event.GetAction(),
+		event.GetRepo().GetFullName(),
+		job.GetName(),
+		shortCommit,
+	)
+	if runner := job.GetRunnerName(); runner != "" {
+		detail += " runner=" + runner
 	}
 
 	return &domain.WebhookEvent{
-		Type:   evType,
-		Repo:   event.Repository.FullName,
-		Detail: fmt.Sprintf("%s: %s / %s", event.Action, event.Repository.FullName, event.WorkflowJob.Name),
+		Type:       evType,
+		EventType:  "workflow_job",
+		Action:     event.GetAction(),
+		Repo:       event.GetRepo().GetFullName(),
+		Branch:     job.GetHeadBranch(),
+		Commit:     commit,
+		Workflow:   job.GetWorkflowName(),
+		Job:        job.GetName(),
+		Runner:     job.GetRunnerName(),
+		Status:     job.GetStatus(),
+		Conclusion: job.GetConclusion(),
+		RunID:      job.GetRunID(),
+		RunAttempt: int(job.GetRunAttempt()),
+		Detail:     detail,
 	}, nil
 }
 
 func parsePush(payload []byte) (*domain.WebhookEvent, error) {
-	var event struct {
-		Ref        string `json:"ref"`
-		After      string `json:"after"`
-		Repository struct {
-			FullName      string `json:"full_name"`
-			DefaultBranch string `json:"default_branch"`
-		} `json:"repository"`
-	}
-	if err := json.Unmarshal(payload, &event); err != nil {
+	parsed, err := gh.ParseWebHook("push", payload)
+	if err != nil {
 		return nil, fmt.Errorf("parsing push: %w", err)
 	}
+	event, ok := parsed.(*gh.PushEvent)
+	if !ok {
+		return nil, fmt.Errorf("parsing push: unexpected payload type %T", parsed)
+	}
 
-	short := event.After
+	short := event.GetAfter()
 	if len(short) > 7 {
 		short = short[:7]
 	}
+	branch := strings.TrimPrefix(event.GetRef(), "refs/heads/")
 
 	return &domain.WebhookEvent{
 		Type:          domain.EventPush,
-		Repo:          event.Repository.FullName,
-		Ref:           event.Ref,
-		DefaultBranch: event.Repository.DefaultBranch,
-		Detail:        fmt.Sprintf("push %s to %s (%s)", event.Ref, event.Repository.FullName, short),
+		EventType:     "push",
+		Action:        "push",
+		Repo:          event.GetRepo().GetFullName(),
+		Ref:           event.GetRef(),
+		DefaultBranch: event.GetRepo().GetDefaultBranch(),
+		Branch:        branch,
+		Commit:        event.GetAfter(),
+		Detail:        fmt.Sprintf("push %s to %s (%s)", event.GetRef(), event.GetRepo().GetFullName(), short),
 	}, nil
 }

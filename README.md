@@ -270,6 +270,9 @@ target = "/home/runner/.npm"
 
 Each entry creates a symlink inside the container mapping `target` to `source` on the cache volume.
 The cache volume is intentionally shared and long-lived, so new ephemeral runners inherit the accumulated cache state from prior runners instead of starting cold each time.
+On scale-up, the cache setup step now migrates any pre-existing local directory at each `target` into the shared cache volume before replacing it with the symlink. This avoids the common `ln -sfn` trap where a populated directory like `/home/runner/.cache/pip` keeps absorbing writes and only gets a nested symlink entry.
+
+If one of the cache targets is `/opt/hostedtoolcache`, the scaler also writes `AGENT_TOOLSDIRECTORY` and `RUNNER_TOOL_CACHE` into `/home/runner/.env` before the runner service is installed. That keeps `actions/setup-*` downloads in the shared tool cache instead of falling back to `RUNNER_DIR/_work/_tool`.
 
 #### CI: `[ci]`
 
@@ -297,6 +300,31 @@ Default-branch cache syncs are configured under `[webhook.sync_repos]`:
 
 When a push to the repo's default branch is received for a listed repo, the scaler updates the shared cache checkout inside a running container at the given cache path.
 
+The same HTTP listener also exposes a read-only `GET /logs` endpoint for recent structured daemon logs. It requires `Authorization: Bearer <token>`, where the token is `GH_SCALER_LOG_TOKEN` if set, otherwise `GH_WEBHOOK_SECRET`.
+
+Supported query parameters:
+
+| Query | Description |
+|-------|-------------|
+| `runner` | Exact runner/container name |
+| `repo` | Exact `owner/repo` |
+| `action` | Exact action such as `queued`, `in_progress`, `completed`, `push`, `scheduled`, `failed` |
+| `event_type` | Exact event family such as `workflow_job`, `push`, `scale_up`, `scale_down`, `cache_sync` |
+| `workflow` | Case-insensitive workflow-name substring |
+| `job` | Case-insensitive job-name substring |
+| `commit` | Commit SHA prefix |
+| `branch` | Exact branch name |
+| `since`, `until` | RFC3339 timestamps |
+| `limit` | Max entries returned (`200` default, `1000` max) |
+| `q` | Case-insensitive free-text match across message/detail fields |
+
+Example:
+
+```bash
+curl -H "Authorization: Bearer $GH_SCALER_LOG_TOKEN" \
+  "http://runner-host:9876/logs?runner=gh-runner-auto-3&repo=Axionic-Labs/axionic-ui&commit=abc1234"
+```
+
 #### Metrics: `[metrics]`
 
 | Key | Default | Description |
@@ -319,7 +347,7 @@ Filesystem-specific: `[state.filesystem]`
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `dir` | `.state` | Directory for per-container timestamp files and workflow metric cache |
+| `dir` | `.state` | Directory for per-container timestamp files, workflow metric cache, and persisted `/logs` history |
 
 For production, use an absolute path like `/var/lib/gh-runner-scaler/state`.
 
@@ -331,6 +359,7 @@ Secrets are **never** stored in the config file. Set them as environment variabl
 |----------|----------|---------|
 | `GH_SCALER_GITHUB_TOKEN` | Y | GitHub PAT for runner management |
 | `GH_WEBHOOK_SECRET` | If webhook enabled | HMAC secret for signature verification |
+| `GH_SCALER_LOG_TOKEN` | Optional | Dedicated bearer token for `GET /logs` (falls back to `GH_WEBHOOK_SECRET`) |
 | `LOKI_PUSH_URL` | If metrics enabled | Grafana Loki push endpoint |
 | `LOKI_USERNAME` | If metrics enabled | Loki instance ID |
 | `GRAFANA_CLOUD_API_KEY` | If metrics enabled | Loki write API key |
@@ -353,6 +382,7 @@ sudo cp config.toml /etc/gh-runner-scaler/config.toml
 sudo tee /etc/gh-runner-scaler/env > /dev/null << 'EOF'
 GH_SCALER_GITHUB_TOKEN=ghp_...
 GH_WEBHOOK_SECRET=your-webhook-secret
+GH_SCALER_LOG_TOKEN=separate-read-token
 LOKI_PUSH_URL=https://logs-prod-XXX.grafana.net/loki/api/v1/push
 LOKI_USERNAME=your-loki-instance-id
 GRAFANA_CLOUD_API_KEY=glc_...
@@ -404,6 +434,13 @@ level=INFO msg="daemon started" poll_interval=30s webhook=true metrics=true
 level=INFO msg="webhook server listening" addr=:9876
 level=INFO msg="runner state" total=1 busy=0 idle=1 auto=0 permanent=1
 ```
+
+### Performance follow-ups
+
+The scaler-side cache drift and tool-cache env wiring can be fixed in this repo, but two larger speed wins remain operational follow-up items:
+
+- Heavy Docker builds should use a persistent warm builder runner or a shared/remote BuildKit cache. Layer cache inside a one-job ephemeral clone is disposable by design.
+- Expensive common tooling should be prewarmed into the template or the shared tool cache. For this stack that likely includes Cloud SDK, `kubectl`, `gke-gcloud-auth-plugin`, and pinned browser bundles.
 
 ### Quick update on the server
 

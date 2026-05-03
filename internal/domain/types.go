@@ -65,9 +65,20 @@ const (
 // WebhookEvent is a provider-agnostic representation of a webhook payload.
 type WebhookEvent struct {
 	Type          WebhookEventType
+	EventType     string
+	Action        string
 	Repo          string // e.g. "Axionic-Labs/axionic-ui"
 	Ref           string // e.g. "refs/heads/main"
 	DefaultBranch string // e.g. "main"
+	Branch        string
+	Commit        string
+	Workflow      string
+	Job           string
+	Runner        string
+	Status        string
+	Conclusion    string
+	RunID         int64
+	RunAttempt    int
 	Detail        string // human-readable summary for logging
 }
 
@@ -123,4 +134,29 @@ type HostMetrics struct {
 type ContainerState struct {
 	Name       string
 	LastActive time.Time
+}
+
+// LogEntry captures a structured daemon/reconciler log entry persisted for API access.
+type LogEntry struct {
+	Time       time.Time         `json:"time"`
+	Level      string            `json:"level"`
+	Message    string            `json:"message"`
+	Component  string            `json:"component,omitempty"`
+	EventType  string            `json:"event_type,omitempty"`
+	Action     string            `json:"action,omitempty"`
+	Repo       string            `json:"repo,omitempty"`
+	Workflow   string            `json:"workflow,omitempty"`
+	Job        string            `json:"job,omitempty"`
+	Runner     string            `json:"runner,omitempty"`
+	Container  string            `json:"container,omitempty"`
+	Commit     string            `json:"commit,omitempty"`
+	Branch     string            `json:"branch,omitempty"`
+	Status     string            `json:"status,omitempty"`
+	Conclusion string            `json:"conclusion,omitempty"`
+	Detail     string            `json:"detail,omitempty"`
+	CachePath  string            `json:"cache_path,omitempty"`
+	RunID      int64             `json:"run_id,omitempty"`
+	RunAttempt int               `json:"run_attempt,omitempty"`
+	Error      string            `json:"error,omitempty"`
+	Attributes map[string]string `json:"attributes,omitempty"`
 }

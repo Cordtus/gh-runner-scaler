@@ -71,6 +71,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 	snap := buildSnapshot(runners, r.cfg.Prefix)
 	availableOnline := AvailableRunnerCount(runners)
 	r.log.Info("runner state",
+		"event_type", "runner_state",
 		"total", snap.Total, "busy", snap.Busy, "idle", snap.Idle,
 		"auto", snap.Auto, "permanent", snap.Permanent, "available_online", availableOnline,
 	)
@@ -84,9 +85,9 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 
 	// 4. Scale up: no online idle runners are available and we're under the cap.
 	if availableOnline == 0 && autoCount < r.cfg.MaxAutoRunners {
-		r.log.Info("all runners busy, scaling up")
+		r.log.Info("all runners busy, scaling up", "event_type", "scale_up", "action", "requested")
 		if err := r.scaleUp(ctx); err != nil {
-			r.log.Error("scale-up failed", "error", err)
+			r.log.Error("scale-up failed", "event_type", "scale_up", "action", "failed", "error", err)
 		}
 	}
 
@@ -102,7 +103,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 		switch {
 		case status == domain.StatusStopped:
 			// Ephemeral runner finished its job and stopped.
-			r.log.Info("container stopped (job complete)", "container", c.Name)
+			r.log.Info("container stopped (job complete)", "event_type", "scale_down", "action", "eligible", "container", c.Name, "runner", c.Name, "detail", "job complete")
 			if err := r.scaleDown(ctx, c.Name, runners); err != nil {
 				r.log.Warn("scale-down cleanup encountered errors", "container", c.Name, "error", err)
 			}
@@ -114,7 +115,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 			// Container exists but has no registered runner -- orphaned.
 			// This catches containers left behind by crashed scalers,
 			// failed config.sh, or manual intervention.
-			r.log.Info("orphaned container (no registered runner)", "container", c.Name)
+			r.log.Info("orphaned container (no registered runner)", "event_type", "scale_down", "action", "eligible", "container", c.Name, "runner", c.Name, "detail", "orphaned container")
 			if err := r.scaleDown(ctx, c.Name, runners); err != nil {
 				r.log.Warn("scale-down cleanup encountered errors", "container", c.Name, "error", err)
 			}
@@ -130,7 +131,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 			idleDur := now.Sub(lastActive)
 			if idleDur >= r.cfg.IdleTimeout {
 				r.log.Info("container idle past timeout",
-					"container", c.Name, "idle", idleDur.Round(time.Second),
+					"event_type", "scale_down", "action", "eligible", "container", c.Name, "runner", c.Name, "idle", idleDur.Round(time.Second),
 				)
 				if err := r.scaleDown(ctx, c.Name, runners); err != nil {
 					r.log.Warn("scale-down cleanup encountered errors", "container", c.Name, "error", err)
@@ -156,7 +157,7 @@ func (r *Reconciler) scaleUp(ctx context.Context) error {
 		return fmt.Errorf("getting registration token: %w", err)
 	}
 
-	r.log.Info("scaling up", "container", name)
+	r.log.Info("scaling up", "event_type", "scale_up", "action", "started", "container", name, "runner", name)
 
 	// Clone template.
 	if err := r.runtime.CloneFromTemplate(ctx, name); err != nil {
@@ -173,7 +174,7 @@ func (r *Reconciler) scaleUp(ctx context.Context) error {
 
 	// Start container.
 	if err := r.runtime.StartContainer(ctx, name); err != nil {
-		return scaleUpFailure("starting container", err, r.cleanupFailedScaleUp(ctx, name, false))
+		return r.scaleUpFailure(name, "starting container", err, r.cleanupFailedScaleUp(ctx, name, false))
 	}
 
 	// Wait for boot.
@@ -186,7 +187,7 @@ func (r *Reconciler) scaleUp(ctx context.Context) error {
 		timeout = 90 * time.Second
 	}
 	if err := r.runtime.WaitForReady(ctx, name, readyCheck, timeout); err != nil {
-		return scaleUpFailure("container not ready", err, r.cleanupFailedScaleUp(ctx, name, true))
+		return r.scaleUpFailure(name, "container not ready", err, r.cleanupFailedScaleUp(ctx, name, true))
 	}
 
 	// Setup cache symlinks (optional).
@@ -205,13 +206,13 @@ func (r *Reconciler) scaleUp(ctx context.Context) error {
 		),
 	}
 	if _, err := r.runtime.ExecCommand(ctx, name, configCmd); err != nil {
-		return scaleUpFailure("runner config failed", err, r.cleanupFailedScaleUp(ctx, name, true))
+		return r.scaleUpFailure(name, "runner config failed", err, r.cleanupFailedScaleUp(ctx, name, true))
 	}
 
 	// Install and start the runner service.
 	svcCmd := []string{"bash", "-c", "cd /home/runner && ./svc.sh install runner && ./svc.sh start"}
 	if _, err := r.runtime.ExecCommand(ctx, name, svcCmd); err != nil {
-		return scaleUpFailure("runner service start failed", err, r.cleanupFailedScaleUp(ctx, name, true))
+		return r.scaleUpFailure(name, "runner service start failed", err, r.cleanupFailedScaleUp(ctx, name, true))
 	}
 
 	// Track state.
@@ -219,13 +220,13 @@ func (r *Reconciler) scaleUp(ctx context.Context) error {
 		r.log.Warn("failed to create state", "container", name, "error", err)
 	}
 
-	r.log.Info("scaled up", "container", name)
+	r.log.Info("scaled up", "event_type", "scale_up", "action", "completed", "container", name, "runner", name)
 	return nil
 }
 
 // scaleDown tears down a container with belt-and-suspenders deregistration.
 func (r *Reconciler) scaleDown(ctx context.Context, name string, runners []domain.Runner) error {
-	r.log.Info("scaling down", "container", name)
+	r.log.Info("scaling down", "event_type", "scale_down", "action", "started", "container", name, "runner", name)
 	var errs []error
 
 	// Stop runner service (best-effort).
@@ -269,10 +270,11 @@ func (r *Reconciler) scaleDown(ctx context.Context, name string, runners []domai
 		errs = append(errs, fmt.Errorf("delete state: %w", err))
 	}
 
-	r.log.Info("scaled down", "container", name)
 	if len(errs) > 0 {
+		r.log.Warn("scaled down with cleanup errors", "event_type", "scale_down", "action", "failed", "container", name, "runner", name, "error", errors.Join(errs...))
 		return fmt.Errorf("scale-down %s: %w", name, errors.Join(errs...))
 	}
+	r.log.Info("scaled down", "event_type", "scale_down", "action", "completed", "container", name, "runner", name)
 	return nil
 }
 
@@ -362,6 +364,12 @@ func (r *Reconciler) cleanupFailedScaleUp(ctx context.Context, name string, atte
 		return nil
 	}
 	return errors.Join(errs...)
+}
+
+func (r *Reconciler) scaleUpFailure(name, action string, err, cleanupErr error) error {
+	combined := scaleUpFailure(action, err, cleanupErr)
+	r.log.Error("scale-up stage failed", "event_type", "scale_up", "action", "failed", "container", name, "runner", name, "detail", action, "error", combined)
+	return combined
 }
 
 func scaleUpFailure(action string, err, cleanupErr error) error {

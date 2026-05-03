@@ -81,6 +81,7 @@ type WebhookConfig struct {
 	Port      int               `toml:"port"`
 	Debounce  Duration          `toml:"debounce"`
 	SyncRepos map[string]string `toml:"sync_repos"`
+	LogsToken string            `toml:"-"`
 }
 
 // MetricsConfig controls the metrics collection and push.
@@ -191,6 +192,11 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("GH_WEBHOOK_SECRET"); v != "" {
 		cfg.CI.GitHub.WebhookSecret = v
+	}
+	if v := os.Getenv("GH_SCALER_LOG_TOKEN"); v != "" {
+		cfg.Webhook.LogsToken = v
+	} else if cfg.Webhook.LogsToken == "" {
+		cfg.Webhook.LogsToken = cfg.CI.GitHub.WebhookSecret
 	}
 	if v := os.Getenv("LOKI_PUSH_URL"); v != "" {
 		cfg.Metrics.Loki.PushURL = v

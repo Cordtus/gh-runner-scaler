@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"crypto/subtle"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -18,6 +20,7 @@ const maxWebhookBodyBytes = 1 << 20
 // runWebhookServer starts the HTTP webhook listener and blocks until ctx is cancelled.
 func (d *Daemon) runWebhookServer(ctx context.Context) {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/logs", d.handleLogs)
 	mux.HandleFunc("/", d.handleWebhook)
 
 	addr := fmt.Sprintf(":%d", d.cfg.WebhookPort)
@@ -66,9 +69,13 @@ func (db *debouncer) schedule(key string, delay time.Duration, fn func()) {
 }
 
 func (d *Daemon) handleWebhook(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
 	if r.Method == http.MethodGet {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("gh-runner-scaler webhook listener"))
+		w.Write([]byte("gh-runner-scaler webhook listener (/logs requires bearer auth)"))
 		return
 	}
 
@@ -111,19 +118,103 @@ func (d *Daemon) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Dispatch.
+	d.logWebhookEvent(event)
+
 	switch event.Type {
 	case domain.EventJobQueued, domain.EventJobCompleted:
-		d.log.Info("webhook event", "detail", event.Detail)
 		webhookDebouncer.schedule("scaler", d.cfg.WebhookDebounce, func() {
 			d.Trigger()
 		})
-
 	case domain.EventPush:
 		d.handlePushEvent(event)
 	}
 
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("ok"))
+}
+
+func (d *Daemon) handleLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if d.logStore == nil {
+		http.Error(w, "log store unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if !d.authorizeLogsRequest(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	query, err := parseLogQuery(r.URL.Query())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	response := logResponse{
+		Entries: d.logStore.Query(query),
+	}
+	response.Count = len(response.Entries)
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		d.log.Error("failed to encode log response", "event_type", "logs", "action", "encode_failed", "error", err)
+	}
+}
+
+func (d *Daemon) authorizeLogsRequest(r *http.Request) bool {
+	token := strings.TrimSpace(d.cfg.LogsToken)
+	if token == "" {
+		return false
+	}
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return false
+	}
+	provided := auth[len("Bearer "):]
+	return subtle.ConstantTimeCompare([]byte(provided), []byte(token)) == 1
+}
+
+func (d *Daemon) logWebhookEvent(event *domain.WebhookEvent) {
+	if event == nil {
+		return
+	}
+	args := []any{
+		"event_type", event.EventType,
+		"action", event.Action,
+		"repo", event.Repo,
+		"detail", event.Detail,
+	}
+	if event.Workflow != "" {
+		args = append(args, "workflow", event.Workflow)
+	}
+	if event.Job != "" {
+		args = append(args, "job", event.Job)
+	}
+	if event.Runner != "" {
+		args = append(args, "runner", event.Runner)
+	}
+	if event.Commit != "" {
+		args = append(args, "commit", event.Commit)
+	}
+	if event.Branch != "" {
+		args = append(args, "branch", event.Branch)
+	}
+	if event.Status != "" {
+		args = append(args, "status", event.Status)
+	}
+	if event.Conclusion != "" {
+		args = append(args, "conclusion", event.Conclusion)
+	}
+	if event.RunID != 0 {
+		args = append(args, "run_id", event.RunID)
+	}
+	if event.RunAttempt != 0 {
+		args = append(args, "run_attempt", event.RunAttempt)
+	}
+	d.log.Info("webhook event", args...)
 }
 
 // handlePushEvent triggers a cache sync if the pushed repo is tracked.
@@ -143,7 +234,16 @@ func (d *Daemon) handlePushEvent(event *domain.WebhookEvent) {
 		repoName = repoName[idx+1:]
 	}
 
-	d.log.Info("push to tracked repo", "detail", event.Detail, "cache_path", cachePath)
+	d.log.Info(
+		"push to tracked repo",
+		"event_type", "cache_sync",
+		"action", "scheduled",
+		"repo", event.Repo,
+		"branch", branch,
+		"commit", event.Commit,
+		"detail", event.Detail,
+		"cache_path", cachePath,
+	)
 
 	webhookDebouncer.schedule("sync-"+repoName, d.cfg.WebhookDebounce, func() {
 		d.syncCacheRepo(context.Background(), event.Repo, branch, cachePath)
@@ -197,13 +297,22 @@ func (d *Daemon) syncCacheRepo(ctx context.Context, repo, branch, cachePath stri
 		{"git", "-C", cachePath, "reset", "--hard", "FETCH_HEAD"},
 	} {
 		if _, err = d.runtime.ExecCommand(ctx, target, cmd); err != nil {
-			d.log.Error("cache sync failed", "repo", repo, "branch", branch, "container", target, "error", err)
+			d.log.Error(
+				"cache sync failed",
+				"event_type", "cache_sync",
+				"action", "failed",
+				"repo", repo,
+				"branch", branch,
+				"container", target,
+				"runner", target,
+				"error", err,
+			)
 			return
 		}
 	}
 
 	log := d.log.With("repo", repo, "branch", branch, "container", target)
-	log.Info("cache sync completed")
+	log.Info("cache sync completed", "event_type", "cache_sync", "action", "completed", "runner", target)
 }
 
 // Compile-time check that slog.Logger is used.

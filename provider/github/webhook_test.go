@@ -2,6 +2,59 @@ package github
 
 import "testing"
 
+func TestParseWorkflowJob_TracksRunnerWorkflowAndCommit(t *testing.T) {
+	payload := []byte(`{
+		"action":"completed",
+		"repository":{"full_name":"Acme/repo"},
+		"workflow_job":{
+			"name":"integration",
+			"workflow_name":"CI",
+			"head_branch":"main",
+			"head_sha":"0123456789abcdef0123456789abcdef01234567",
+			"runner_name":"gh-runner-auto-3",
+			"status":"completed",
+			"conclusion":"success",
+			"run_id":451,
+			"run_attempt":2
+		}
+	}`)
+
+	event, err := parseWorkflowJob(payload)
+	if err != nil {
+		t.Fatalf("parseWorkflowJob returned error: %v", err)
+	}
+	if event == nil {
+		t.Fatal("expected event, got nil")
+	}
+	if event.EventType != "workflow_job" {
+		t.Fatalf("expected workflow_job event type, got %q", event.EventType)
+	}
+	if event.Action != "completed" {
+		t.Fatalf("expected completed action, got %q", event.Action)
+	}
+	if event.Workflow != "CI" {
+		t.Fatalf("expected workflow CI, got %q", event.Workflow)
+	}
+	if event.Job != "integration" {
+		t.Fatalf("expected job integration, got %q", event.Job)
+	}
+	if event.Runner != "gh-runner-auto-3" {
+		t.Fatalf("expected runner gh-runner-auto-3, got %q", event.Runner)
+	}
+	if event.Commit != "0123456789abcdef0123456789abcdef01234567" {
+		t.Fatalf("expected full commit hash, got %q", event.Commit)
+	}
+	if event.Branch != "main" {
+		t.Fatalf("expected branch main, got %q", event.Branch)
+	}
+	if event.RunID != 451 {
+		t.Fatalf("expected run id 451, got %d", event.RunID)
+	}
+	if event.RunAttempt != 2 {
+		t.Fatalf("expected run attempt 2, got %d", event.RunAttempt)
+	}
+}
+
 func TestParsePush_TracksDefaultBranch(t *testing.T) {
 	payload := []byte(`{
 		"ref":"refs/heads/trunk",
@@ -21,5 +74,11 @@ func TestParsePush_TracksDefaultBranch(t *testing.T) {
 	}
 	if event.Ref != "refs/heads/trunk" {
 		t.Fatalf("expected push ref preserved, got %q", event.Ref)
+	}
+	if event.Branch != "trunk" {
+		t.Fatalf("expected branch trunk, got %q", event.Branch)
+	}
+	if event.Commit != "0123456789abcdef" {
+		t.Fatalf("expected full commit hash, got %q", event.Commit)
 	}
 }

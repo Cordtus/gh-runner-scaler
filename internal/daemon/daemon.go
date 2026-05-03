@@ -21,6 +21,7 @@ type Config struct {
 	WebhookEnabled   bool
 	WebhookPort      int
 	WebhookDebounce  time.Duration
+	LogsToken        string
 	MetricsEnabled   bool
 	MetricsInterval  time.Duration
 	CollectWorkflows bool
@@ -37,6 +38,7 @@ type Daemon struct {
 	ci         iface.CIProvider
 	metrics    iface.MetricsBackend
 	runtime    iface.ContainerRuntime
+	logStore   *LogStore
 	log        *slog.Logger
 
 	triggerCh chan struct{}
@@ -59,6 +61,7 @@ func New(
 	ci iface.CIProvider,
 	metrics iface.MetricsBackend,
 	runtime iface.ContainerRuntime,
+	logStore *LogStore,
 	log *slog.Logger,
 ) *Daemon {
 	if log == nil {
@@ -70,6 +73,7 @@ func New(
 		ci:                ci,
 		metrics:           metrics,
 		runtime:           runtime,
+		logStore:          logStore,
 		log:               log,
 		triggerCh:         make(chan struct{}, 1),
 		workflowDelivered: make(map[string]struct{}),

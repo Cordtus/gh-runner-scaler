@@ -228,6 +228,7 @@ func TestCollectAndPush_DeduplicatesRepeatedWorkflowMetrics(t *testing.T) {
 		ci,
 		backend,
 		nil,
+		nil,
 		testLogger(),
 	)
 
@@ -272,6 +273,7 @@ func TestCollectAndPush_PersistsWorkflowDedupeAcrossDaemonRestart(t *testing.T) 
 		firstCI,
 		firstBackend,
 		nil,
+		nil,
 		testLogger(),
 	)
 	first.collectAndPush(context.Background())
@@ -292,6 +294,7 @@ func TestCollectAndPush_PersistsWorkflowDedupeAcrossDaemonRestart(t *testing.T) 
 		nil,
 		secondCI,
 		secondBackend,
+		nil,
 		nil,
 		testLogger(),
 	)
@@ -337,6 +340,7 @@ func TestCollectAndPush_ContinuesWorkflowAndHostMetricsWhenRunnerListFails(t *te
 		ci,
 		backend,
 		runtime,
+		nil,
 		testLogger(),
 	)
 
@@ -386,6 +390,7 @@ func TestCollectAndPush_OmitsRunnerContainerSamplesWhenContainerListFails(t *tes
 		ci,
 		backend,
 		runtime,
+		nil,
 		testLogger(),
 	)
 
@@ -431,6 +436,7 @@ func TestCollectAndPush_RetriesWorkflowMetricsAfterPushFailure(t *testing.T) {
 		nil,
 		ci,
 		backend,
+		nil,
 		nil,
 		testLogger(),
 	)

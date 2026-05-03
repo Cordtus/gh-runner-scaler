@@ -3,6 +3,7 @@ package lxd
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/canonical/lxd/shared/api"
@@ -61,21 +62,74 @@ func (cm *CacheManager) SetupCacheSymlinks(ctx context.Context, containerName st
 		return nil
 	}
 
-	// Build a shell script that creates all symlinks.
-	// mkdir -p for parent dirs and ln -sfn for each mapping.
-	var cmds []string
-	for _, sl := range cm.symlinks {
-		parent := sl.Target[:strings.LastIndex(sl.Target, "/")]
-		cmds = append(cmds, fmt.Sprintf("mkdir -p '%s'", parent))
-		cmds = append(cmds, fmt.Sprintf("ln -sfn '%s' '%s'", sl.Source, sl.Target))
-	}
-
-	script := strings.Join(cmds, " && ")
+	script := cacheSetupScript(cm.symlinks)
 	_, err := cm.runtime.ExecCommand(ctx, containerName, []string{"bash", "-c", script})
 	if err != nil {
 		return fmt.Errorf("setting up cache symlinks in %s: %w", containerName, err)
 	}
+
+	if toolCacheDir := toolCacheDir(cm.symlinks); toolCacheDir != "" {
+		_, err := cm.runtime.ExecCommand(ctx, containerName, []string{"bash", "-c", runnerEnvScript(toolCacheDir)})
+		if err != nil {
+			return fmt.Errorf("configuring runner cache env in %s: %w", containerName, err)
+		}
+	}
 	return nil
+}
+
+func cacheSetupScript(symlinks []config.SymlinkConfig) string {
+	var lines []string
+	lines = append(lines, "set -eu")
+	for _, sl := range symlinks {
+		source := shellQuote(sl.Source)
+		target := shellQuote(sl.Target)
+		parent := shellQuote(filepath.Dir(sl.Target))
+		lines = append(lines,
+			fmt.Sprintf("mkdir -p %s", source),
+			fmt.Sprintf("chown runner:runner %s || true", source),
+			fmt.Sprintf("mkdir -p %s", parent),
+			fmt.Sprintf("if [ -d %s ] && [ ! -L %s ]; then", target, target),
+			fmt.Sprintf("  cp -an %s/. %s/", target, source),
+			fmt.Sprintf("  rm -rf %s", target),
+			fmt.Sprintf("elif [ -e %s ] || [ -L %s ]; then", target, target),
+			fmt.Sprintf("  rm -rf %s", target),
+			"fi",
+			fmt.Sprintf("ln -s %s %s", source, target),
+			fmt.Sprintf("chown -h runner:runner %s || true", target),
+		)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func toolCacheDir(symlinks []config.SymlinkConfig) string {
+	for _, sl := range symlinks {
+		if filepath.Base(sl.Target) == "hostedtoolcache" {
+			return sl.Target
+		}
+	}
+	return ""
+}
+
+func runnerEnvScript(toolCache string) string {
+	toolCacheLine := shellQuote("AGENT_TOOLSDIRECTORY=" + toolCache)
+	runnerToolCacheLine := shellQuote("RUNNER_TOOL_CACHE=" + toolCache)
+	return strings.Join([]string{
+		"set -eu",
+		`env_file=/home/runner/.env`,
+		`tmp_file=$(mktemp)`,
+		`if [ -f "$env_file" ]; then`,
+		`  grep -v -E '^(AGENT_TOOLSDIRECTORY|RUNNER_TOOL_CACHE)=' "$env_file" > "$tmp_file" || true`,
+		`fi`,
+		fmt.Sprintf(`printf '%%s\n%%s\n' %s %s >> "$tmp_file"`, toolCacheLine, runnerToolCacheLine),
+		`chown runner:runner "$tmp_file"`,
+		`chmod 600 "$tmp_file"`,
+		`mv "$tmp_file" "$env_file"`,
+		`chown runner:runner "$env_file"`,
+	}, "\n")
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
 // Compile-time interface assertion is not possible here because CacheManager
