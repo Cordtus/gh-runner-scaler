@@ -37,7 +37,7 @@ func (d *Daemon) collectLogDerivedMetrics(ctx context.Context) {
 	}
 
 	if err := d.metrics.PushIssueEvents(ctx, issues); err != nil {
-		d.log.Error("failed to push issue events", "error", err)
+		d.log.Error("failed to push issue events", "event_type", "issue_events", "action", "push_failed", "error", err)
 		return
 	}
 	d.markIssueEntriesDelivered(issueEntries)
@@ -52,6 +52,9 @@ func selectIssueLogEntries(entries []domain.LogEntry) []domain.LogEntry {
 	for _, entry := range entries {
 		level := strings.ToUpper(strings.TrimSpace(entry.Level))
 		if level != "WARN" && level != "ERROR" {
+			continue
+		}
+		if entry.EventType == "issue_events" {
 			continue
 		}
 		issues = append(issues, entry)
@@ -104,17 +107,23 @@ func buildLifecycleMetrics(entries []domain.LogEntry) domain.LifecycleMetrics {
 		return metrics
 	}
 
-	metrics.WindowStart = entries[0].Time.UTC().Format(time.RFC3339)
-	metrics.WindowEnd = entries[len(entries)-1].Time.UTC().Format(time.RFC3339)
+	sortedEntries := append([]domain.LogEntry(nil), entries...)
+	sort.SliceStable(sortedEntries, func(i, j int) bool {
+		return sortedEntries[i].Time.Before(sortedEntries[j].Time)
+	})
+
+	metrics.WindowStart = sortedEntries[0].Time.UTC().Format(time.RFC3339)
+	metrics.WindowEnd = sortedEntries[len(sortedEntries)-1].Time.UTC().Format(time.RFC3339)
 
 	queueStarts := make(map[string]time.Time)
 	activeLifecycles := make(map[string]*runnerLifecycle)
+	pendingRunnerJobs := make(map[string]map[string]struct{})
 	var queueWaits []float64
 	var lifecycleJobCounts []float64
 	var scaleGaps []float64
 	var lastScaleDownAt time.Time
 
-	for _, entry := range entries {
+	for _, entry := range sortedEntries {
 		switch {
 		case entry.EventType == "workflow_job" && entry.Action == "queued":
 			queueStarts[analyticsJobKey(entry)] = entry.Time
@@ -127,10 +136,20 @@ func buildLifecycleMetrics(entries []domain.LogEntry) domain.LifecycleMetrics {
 			if entry.Runner != "" {
 				if lifecycle := activeLifecycles[entry.Runner]; lifecycle != nil {
 					lifecycle.jobs[key] = struct{}{}
+				} else {
+					if pendingRunnerJobs[entry.Runner] == nil {
+						pendingRunnerJobs[entry.Runner] = make(map[string]struct{})
+					}
+					pendingRunnerJobs[entry.Runner][key] = struct{}{}
 				}
 			}
 		case entry.EventType == "scale_up" && entry.Action == "completed" && entry.Runner != "":
-			activeLifecycles[entry.Runner] = &runnerLifecycle{jobs: make(map[string]struct{})}
+			lifecycle := &runnerLifecycle{jobs: make(map[string]struct{})}
+			for key := range pendingRunnerJobs[entry.Runner] {
+				lifecycle.jobs[key] = struct{}{}
+			}
+			delete(pendingRunnerJobs, entry.Runner)
+			activeLifecycles[entry.Runner] = lifecycle
 		case entry.EventType == "scale_up" && entry.Action == "requested":
 			if !lastScaleDownAt.IsZero() && !entry.Time.Before(lastScaleDownAt) {
 				scaleGaps = append(scaleGaps, entry.Time.Sub(lastScaleDownAt).Seconds())
@@ -141,6 +160,7 @@ func buildLifecycleMetrics(entries []domain.LogEntry) domain.LifecycleMetrics {
 				lifecycleJobCounts = append(lifecycleJobCounts, float64(len(lifecycle.jobs)))
 				delete(activeLifecycles, entry.Runner)
 			}
+			delete(pendingRunnerJobs, entry.Runner)
 			lastScaleDownAt = entry.Time
 		}
 	}

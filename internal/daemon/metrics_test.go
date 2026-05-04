@@ -56,6 +56,7 @@ func TestBuildRunnerMetrics_TracksAvailableOnlineSeparatelyFromIdle(t *testing.T
 	containers := []domain.Container{
 		{Name: "auto-1", Status: domain.StatusRunning},
 		{Name: "auto-2", Status: domain.StatusRunning},
+		{Name: "auto-3", Status: domain.StatusRunning},
 	}
 
 	metrics := buildRunnerMetrics(runners, containers, metricsTestCI{prefix: "auto"})
@@ -84,8 +85,8 @@ func TestBuildRunnerMetrics_TracksAvailableOnlineSeparatelyFromIdle(t *testing.T
 	if metrics.PermanentRunners != 1 {
 		t.Fatalf("PermanentRunners = %d, want 1", metrics.PermanentRunners)
 	}
-	if metrics.ProvisioningRunners != 1 {
-		t.Fatalf("ProvisioningRunners = %d, want 1", metrics.ProvisioningRunners)
+	if metrics.ProvisioningRunners != 2 {
+		t.Fatalf("ProvisioningRunners = %d, want 2", metrics.ProvisioningRunners)
 	}
 	if metrics.UtilizationPct != 50 {
 		t.Fatalf("UtilizationPct = %v, want 50", metrics.UtilizationPct)
@@ -126,7 +127,9 @@ type metricsRecorder struct {
 	issueBatches     [][]domain.IssueEvent
 	lifecycleBatches []domain.LifecycleMetrics
 	workflowErrs     []error
+	issueErrs        []error
 	workflowCalls    int
+	issueCalls       int
 }
 
 func (m *metricsRecorder) PushRunnerMetrics(_ context.Context, rm domain.RunnerMetrics) error {
@@ -151,6 +154,11 @@ func (m *metricsRecorder) PushHostMetrics(_ context.Context, hm domain.HostMetri
 }
 
 func (m *metricsRecorder) PushIssueEvents(_ context.Context, issues []domain.IssueEvent) error {
+	call := m.issueCalls
+	m.issueCalls++
+	if call < len(m.issueErrs) && m.issueErrs[call] != nil {
+		return m.issueErrs[call]
+	}
 	batch := append([]domain.IssueEvent(nil), issues...)
 	m.issueBatches = append(m.issueBatches, batch)
 	return nil
@@ -520,8 +528,11 @@ func TestCollectAndPush_PushesLifecycleMetricsAndIssueEventsFromLogStore(t *test
 	if lifecycle.LifecycleSamples != 1 {
 		t.Fatalf("LifecycleSamples = %d, want 1", lifecycle.LifecycleSamples)
 	}
-	if lifecycle.AvgJobsPerLifecycle != 1 {
-		t.Fatalf("AvgJobsPerLifecycle = %v, want 1", lifecycle.AvgJobsPerLifecycle)
+	if lifecycle.AvgJobsPerLifecycle != 2 {
+		t.Fatalf("AvgJobsPerLifecycle = %v, want 2", lifecycle.AvgJobsPerLifecycle)
+	}
+	if lifecycle.ReusedLifecyclePct != 100 {
+		t.Fatalf("ReusedLifecyclePct = %v, want 100", lifecycle.ReusedLifecyclePct)
 	}
 	if lifecycle.ScaleDownToScaleUpSamples != 1 {
 		t.Fatalf("ScaleDownToScaleUpSamples = %d, want 1", lifecycle.ScaleDownToScaleUpSamples)
@@ -541,5 +552,144 @@ func TestCollectAndPush_PushesLifecycleMetricsAndIssueEventsFromLogStore(t *test
 	}
 	if issue.Repo != "Acme/repo" {
 		t.Fatalf("issue repo = %q, want Acme/repo", issue.Repo)
+	}
+}
+
+func TestCollectAndPush_DoesNotReplayIssueTransportFailuresAsIssueEvents(t *testing.T) {
+	store, err := NewLogStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLogStore returned error: %v", err)
+	}
+	if err := store.Record(domain.LogEntry{
+		Time:      time.Date(2026, 5, 4, 13, 0, 0, 0, time.UTC),
+		Level:     "WARN",
+		Message:   "failed to collect workflow metrics",
+		Error:     "rate limit exceeded",
+		EventType: "workflow_metrics",
+		Action:    "failed",
+		Repo:      "Acme/repo",
+	}); err != nil {
+		t.Fatalf("Record returned error: %v", err)
+	}
+
+	logger := slog.New(NewLogHandler(slog.NewTextHandler(io.Discard, nil), store))
+	backend := &metricsRecorder{
+		issueErrs: []error{errors.New("loki unavailable")},
+	}
+	daemon := New(
+		Config{StateDir: t.TempDir()},
+		nil,
+		metricsTestCI{prefix: "auto"},
+		backend,
+		nil,
+		store,
+		logger,
+	)
+
+	daemon.collectAndPush(context.Background())
+	daemon.collectAndPush(context.Background())
+
+	if len(backend.issueBatches) != 1 {
+		t.Fatalf("issue batch count = %d, want 1", len(backend.issueBatches))
+	}
+	if len(backend.issueBatches[0]) != 1 {
+		t.Fatalf("issue count = %d, want 1", len(backend.issueBatches[0]))
+	}
+	if got := backend.issueBatches[0][0].Message; got != "failed to collect workflow metrics" {
+		t.Fatalf("issue message = %q, want failed to collect workflow metrics", got)
+	}
+}
+
+func TestCollectAndPush_ClearsPendingJobsWhenLifecycleEnds(t *testing.T) {
+	store, err := NewLogStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLogStore returned error: %v", err)
+	}
+	base := time.Date(2026, 5, 4, 14, 0, 0, 0, time.UTC)
+	entries := []domain.LogEntry{
+		{Time: base, Level: "INFO", Message: "old job started", EventType: "workflow_job", Action: "in_progress", Repo: "Acme/repo", Workflow: "CI", Job: "old", JobID: 51, RunID: 2001, RunAttempt: 1, Runner: "auto-1"},
+		{Time: base.Add(30 * time.Second), Level: "INFO", Message: "old lifecycle scaling down", EventType: "scale_down", Action: "started", Runner: "auto-1"},
+		{Time: base.Add(2 * time.Minute), Level: "INFO", Message: "new runner ready", EventType: "scale_up", Action: "completed", Runner: "auto-1"},
+		{Time: base.Add(3 * time.Minute), Level: "INFO", Message: "new job started", EventType: "workflow_job", Action: "in_progress", Repo: "Acme/repo", Workflow: "CI", Job: "new", JobID: 52, RunID: 2002, RunAttempt: 1, Runner: "auto-1"},
+		{Time: base.Add(5 * time.Minute), Level: "INFO", Message: "new lifecycle scaling down", EventType: "scale_down", Action: "started", Runner: "auto-1"},
+	}
+	for _, entry := range entries {
+		if err := store.Record(entry); err != nil {
+			t.Fatalf("Record returned error: %v", err)
+		}
+	}
+
+	backend := &metricsRecorder{}
+	daemon := New(
+		Config{StateDir: t.TempDir()},
+		nil,
+		metricsTestCI{prefix: "auto"},
+		backend,
+		nil,
+		store,
+		testLogger(),
+	)
+
+	daemon.collectAndPush(context.Background())
+
+	if len(backend.lifecycleBatches) != 1 {
+		t.Fatalf("lifecycle batch count = %d, want 1", len(backend.lifecycleBatches))
+	}
+	lifecycle := backend.lifecycleBatches[0]
+	if lifecycle.LifecycleSamples != 1 {
+		t.Fatalf("LifecycleSamples = %d, want 1", lifecycle.LifecycleSamples)
+	}
+	if lifecycle.AvgJobsPerLifecycle != 1 {
+		t.Fatalf("AvgJobsPerLifecycle = %v, want 1", lifecycle.AvgJobsPerLifecycle)
+	}
+	if lifecycle.ReusedLifecyclePct != 0 {
+		t.Fatalf("ReusedLifecyclePct = %v, want 0", lifecycle.ReusedLifecyclePct)
+	}
+}
+
+func TestCollectAndPush_SortsLifecycleEntriesBeforeAttribution(t *testing.T) {
+	store, err := NewLogStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLogStore returned error: %v", err)
+	}
+	base := time.Date(2026, 5, 4, 15, 0, 0, 0, time.UTC)
+	entries := []domain.LogEntry{
+		{Time: base.Add(30 * time.Second), Level: "INFO", Message: "old lifecycle scaling down", EventType: "scale_down", Action: "started", Runner: "auto-1"},
+		{Time: base, Level: "INFO", Message: "delayed old job started", EventType: "workflow_job", Action: "in_progress", Repo: "Acme/repo", Workflow: "CI", Job: "old", JobID: 61, RunID: 3001, RunAttempt: 1, Runner: "auto-1"},
+		{Time: base.Add(2 * time.Minute), Level: "INFO", Message: "new runner ready", EventType: "scale_up", Action: "completed", Runner: "auto-1"},
+		{Time: base.Add(3 * time.Minute), Level: "INFO", Message: "new job started", EventType: "workflow_job", Action: "in_progress", Repo: "Acme/repo", Workflow: "CI", Job: "new", JobID: 62, RunID: 3002, RunAttempt: 1, Runner: "auto-1"},
+		{Time: base.Add(5 * time.Minute), Level: "INFO", Message: "new lifecycle scaling down", EventType: "scale_down", Action: "started", Runner: "auto-1"},
+	}
+	for _, entry := range entries {
+		if err := store.Record(entry); err != nil {
+			t.Fatalf("Record returned error: %v", err)
+		}
+	}
+
+	backend := &metricsRecorder{}
+	daemon := New(
+		Config{StateDir: t.TempDir()},
+		nil,
+		metricsTestCI{prefix: "auto"},
+		backend,
+		nil,
+		store,
+		testLogger(),
+	)
+
+	daemon.collectAndPush(context.Background())
+
+	if len(backend.lifecycleBatches) != 1 {
+		t.Fatalf("lifecycle batch count = %d, want 1", len(backend.lifecycleBatches))
+	}
+	lifecycle := backend.lifecycleBatches[0]
+	if lifecycle.LifecycleSamples != 1 {
+		t.Fatalf("LifecycleSamples = %d, want 1", lifecycle.LifecycleSamples)
+	}
+	if lifecycle.AvgJobsPerLifecycle != 1 {
+		t.Fatalf("AvgJobsPerLifecycle = %v, want 1", lifecycle.AvgJobsPerLifecycle)
+	}
+	if lifecycle.ReusedLifecyclePct != 0 {
+		t.Fatalf("ReusedLifecyclePct = %v, want 0", lifecycle.ReusedLifecyclePct)
 	}
 }

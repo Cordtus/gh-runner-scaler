@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 
@@ -54,16 +55,49 @@ func (b *Backend) PushWorkflowMetrics(ctx context.Context, runs []domain.Workflo
 	if len(runs) == 0 {
 		return nil
 	}
-	labels := map[string]string{
+	baseLabels := map[string]string{
 		"job":     "gh-runner-scaler",
 		"service": "workflow-metrics",
 		"org":     b.org,
 	}
-	entries := make([]any, 0, len(runs))
+
+	repoRuns := make(map[string][]domain.WorkflowMetrics)
 	for _, run := range runs {
-		entries = append(entries, run)
+		repoRuns[run.Repo] = append(repoRuns[run.Repo], run)
 	}
-	return b.pushEntries(ctx, labels, entries)
+
+	repos := make([]string, 0, len(repoRuns))
+	for repo := range repoRuns {
+		repos = append(repos, repo)
+	}
+	sort.Strings(repos)
+
+	streams := make([]lokiStream, 0, len(repos))
+	for _, repo := range repos {
+		runs := append([]domain.WorkflowMetrics(nil), repoRuns[repo]...)
+		sortWorkflowMetrics(runs)
+
+		labels := cloneLabels(baseLabels)
+		if repo != "" {
+			labels["repo"] = repo
+		}
+
+		entries := make([]any, 0, len(runs))
+		for _, run := range runs {
+			entries = append(entries, run)
+		}
+
+		values, err := buildValues(entries)
+		if err != nil {
+			return err
+		}
+		streams = append(streams, lokiStream{
+			Stream: labels,
+			Values: values,
+		})
+	}
+
+	return b.pushPayload(ctx, lokiPayload{Streams: streams})
 }
 
 // PushHostMetrics pushes container and storage pool state.
@@ -122,11 +156,25 @@ func (b *Backend) pushEntries(ctx context.Context, labels map[string]string, ent
 		return nil
 	}
 
+	values, err := buildValues(entries)
+	if err != nil {
+		return err
+	}
+
+	return b.pushPayload(ctx, lokiPayload{
+		Streams: []lokiStream{{
+			Stream: labels,
+			Values: values,
+		}},
+	})
+}
+
+func buildValues(entries []any) ([][]string, error) {
 	values := make([][]string, 0, len(entries))
 	for i, entry := range entries {
 		valueJSON, err := json.Marshal(entry)
 		if err != nil {
-			return fmt.Errorf("marshaling metrics: %w", err)
+			return nil, fmt.Errorf("marshaling metrics: %w", err)
 		}
 		timestamp := entryTimestamp(entry)
 		if timestamp.IsZero() {
@@ -137,14 +185,10 @@ func (b *Backend) pushEntries(ctx context.Context, labels map[string]string, ent
 			string(valueJSON),
 		})
 	}
+	return values, nil
+}
 
-	payload := lokiPayload{
-		Streams: []lokiStream{{
-			Stream: labels,
-			Values: values,
-		}},
-	}
-
+func (b *Backend) pushPayload(ctx context.Context, payload lokiPayload) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshaling Loki payload: %w", err)
@@ -189,4 +233,48 @@ func parseEntryTime(value string) time.Time {
 		return time.Time{}
 	}
 	return parsed
+}
+
+func sortWorkflowMetrics(runs []domain.WorkflowMetrics) {
+	sort.SliceStable(runs, func(i, j int) bool {
+		left := parseEntryTime(runs[i].CompletedAt)
+		right := parseEntryTime(runs[j].CompletedAt)
+
+		switch {
+		case left.IsZero() && right.IsZero():
+			return workflowMetricTieBreak(runs[i], runs[j])
+		case left.IsZero():
+			return false
+		case right.IsZero():
+			return true
+		case left.Equal(right):
+			return workflowMetricTieBreak(runs[i], runs[j])
+		default:
+			return left.Before(right)
+		}
+	})
+}
+
+func workflowMetricTieBreak(left, right domain.WorkflowMetrics) bool {
+	if left.RunID != right.RunID {
+		return left.RunID < right.RunID
+	}
+	if left.RunAttempt != right.RunAttempt {
+		return left.RunAttempt < right.RunAttempt
+	}
+	if left.RunNumber != right.RunNumber {
+		return left.RunNumber < right.RunNumber
+	}
+	if left.Workflow != right.Workflow {
+		return left.Workflow < right.Workflow
+	}
+	return left.Branch < right.Branch
+}
+
+func cloneLabels(labels map[string]string) map[string]string {
+	cloned := make(map[string]string, len(labels)+1)
+	for key, value := range labels {
+		cloned[key] = value
+	}
+	return cloned
 }
