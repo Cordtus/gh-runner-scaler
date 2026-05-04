@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	gh "github.com/google/go-github/v74/github"
+
+	"github.com/Cordtus/gh-runner-scaler/internal/domain"
 )
 
 func TestListRunners_PaginatesAcrossAllPages(t *testing.T) {
@@ -196,6 +198,121 @@ func TestListRecentWorkflowRuns_EnrichesFailureDetailsFromWorkflowJobs(t *testin
 	}
 	if runs[0].FailureReason != "Run tests" {
 		t.Fatalf("FailureReason = %q, want Run tests", runs[0].FailureReason)
+	}
+}
+
+func TestEnrichWorkflowMetrics_EnrichesFailureDetailsFromWorkflowJobs(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/orgs/test-org/repos":
+			writeJSON(t, w, []map[string]any{{"name": "repo-a"}})
+		case r.URL.Path == "/repos/test-org/repo-a/actions/runs":
+			writeJSON(t, w, map[string]any{
+				"total_count": 1,
+				"workflow_runs": []map[string]any{{
+					"id":             101,
+					"run_attempt":    2,
+					"name":           "build",
+					"conclusion":     "failure",
+					"run_number":     7,
+					"event":          "push",
+					"head_branch":    "main",
+					"created_at":     "2026-04-19T12:00:00Z",
+					"run_started_at": "2026-04-19T12:01:00Z",
+					"updated_at":     "2026-04-19T12:01:30Z",
+				}},
+			})
+		case r.URL.Path == "/repos/test-org/repo-a/actions/runs/101/attempts/2/jobs":
+			writeJSON(t, w, map[string]any{
+				"total_count": 1,
+				"jobs": []map[string]any{{
+					"id":           501,
+					"name":         "integration",
+					"conclusion":   "failure",
+					"started_at":   "2026-04-19T12:01:05Z",
+					"completed_at": "2026-04-19T12:01:25Z",
+					"steps": []map[string]any{{
+						"name":       "Install",
+						"conclusion": "success",
+					}, {
+						"name":       "Run tests",
+						"conclusion": "failure",
+					}},
+				}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	provider := testProvider(t, server)
+	runs, err := provider.ListRecentWorkflowRunsShallow(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("ListRecentWorkflowRunsShallow returned error: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("expected 1 run, got %d", len(runs))
+	}
+	if runs[0].FailedJob != "" || runs[0].FailedStep != "" || runs[0].FailureReason != "" {
+		t.Fatalf("expected shallow run to be unenriched, got %+v", runs[0])
+	}
+
+	runs, err = provider.EnrichWorkflowMetrics(context.Background(), runs)
+	if err != nil {
+		t.Fatalf("EnrichWorkflowMetrics returned error: %v", err)
+	}
+	if runs[0].FailedJob != "integration" {
+		t.Fatalf("FailedJob = %q, want integration", runs[0].FailedJob)
+	}
+	if runs[0].FailedStep != "Run tests" {
+		t.Fatalf("FailedStep = %q, want Run tests", runs[0].FailedStep)
+	}
+	if runs[0].FailureReason != "Run tests" {
+		t.Fatalf("FailureReason = %q, want Run tests", runs[0].FailureReason)
+	}
+}
+
+func TestEnrichWorkflowMetrics_PreservesRunOnWorkflowJobsError(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/test-org/repo-a/actions/runs/101/attempts/2/jobs":
+			http.Error(w, "upstream unavailable", http.StatusBadGateway)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	provider := testProvider(t, server)
+	runs, err := provider.EnrichWorkflowMetrics(context.Background(), []domain.WorkflowMetrics{{
+		RunID:       101,
+		RunAttempt:  2,
+		Repo:        "repo-a",
+		Workflow:    "build",
+		Conclusion:  "failure",
+		DurationS:   30,
+		RunNumber:   7,
+		Event:       "push",
+		Branch:      "main",
+		CompletedAt: "2026-04-19T12:01:30Z",
+	}})
+	if err == nil {
+		t.Fatal("expected enrichment error, got nil")
+	}
+	if len(runs) != 1 {
+		t.Fatalf("expected 1 run, got %d", len(runs))
+	}
+	if runs[0].FailedJob != "" {
+		t.Fatalf("FailedJob = %q, want empty", runs[0].FailedJob)
+	}
+	if runs[0].FailedStep != "" {
+		t.Fatalf("FailedStep = %q, want empty", runs[0].FailedStep)
+	}
+	if runs[0].FailureReason != "failure" {
+		t.Fatalf("FailureReason = %q, want failure", runs[0].FailureReason)
 	}
 }
 

@@ -341,28 +341,32 @@ func (d *Daemon) syncCacheRepo(ctx context.Context, repo, branch, cachePath stri
 		return
 	}
 
-	for _, cmd := range [][]string{
-		{"git", "config", "--global", "--add", "safe.directory", cachePath},
-		{"git", "-C", cachePath, "fetch", "--prune", "origin", branch},
-		{"git", "-C", cachePath, "reset", "--hard", "FETCH_HEAD"},
-	} {
-		if _, err = d.runtime.ExecCommand(ctx, target, cmd); err != nil {
-			d.log.Error(
-				"cache sync failed",
-				"event_type", "cache_sync",
-				"action", "failed",
-				"repo", repo,
-				"branch", branch,
-				"container", target,
-				"runner", target,
-				"error", err,
-			)
-			return
-		}
+	script := strings.Join([]string{
+		"set -eu",
+		"git config --global --add safe.directory " + shellQuote(cachePath),
+		"git -C " + shellQuote(cachePath) + " fetch --prune origin " + shellQuote(branch),
+		"git -C " + shellQuote(cachePath) + " reset --hard FETCH_HEAD",
+	}, "\n")
+	if _, err = d.runtime.ExecCommand(ctx, target, []string{"bash", "-c", script}); err != nil {
+		d.log.Error(
+			"cache sync failed",
+			"event_type", "cache_sync",
+			"action", "failed",
+			"repo", repo,
+			"branch", branch,
+			"container", target,
+			"runner", target,
+			"error", err,
+		)
+		return
 	}
 
 	log := d.log.With("repo", repo, "branch", branch, "container", target)
 	log.Info("cache sync completed", "event_type", "cache_sync", "action", "completed", "runner", target)
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
 // Compile-time check that slog.Logger is used.

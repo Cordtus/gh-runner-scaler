@@ -36,4 +36,9 @@ type CIProvider interface {
 
 	// ListRecentWorkflowRuns returns completed workflow runs for metrics collection.
 	ListRecentWorkflowRuns(ctx context.Context, perRepo int) ([]domain.WorkflowMetrics, error)
+
+	// EnrichWorkflowMetrics hydrates optional details for a batch of fresh workflow metrics.
+	// Providers should preserve the input ordering and return the original runs when no
+	// enrichment is available.
+	EnrichWorkflowMetrics(ctx context.Context, runs []domain.WorkflowMetrics) ([]domain.WorkflowMetrics, error)
 }

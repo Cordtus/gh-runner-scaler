@@ -36,6 +36,11 @@ type Reconciler struct {
 	log     *slog.Logger
 }
 
+type reconcilePass struct {
+	removeToken        string
+	removeTokenFetched bool
+}
+
 // NewReconciler creates a Reconciler wired to the given providers.
 func NewReconciler(
 	cfg ReconcilerConfig,
@@ -82,30 +87,34 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 		return fmt.Errorf("listing containers: %w", err)
 	}
 	autoCount := len(containers)
-
-	// 4. Scale up: no online idle runners are available and we're under the cap.
-	if availableOnline == 0 && autoCount < r.cfg.MaxAutoRunners {
-		r.log.Info("all runners busy, scaling up", "event_type", "scale_up", "action", "requested")
-		if err := r.scaleUp(ctx); err != nil {
-			r.log.Error("scale-up failed", "event_type", "scale_up", "action", "failed", "error", err)
-		}
+	if availableOnline == 0 {
+		containers = r.refreshContainerStatuses(ctx, containers)
 	}
 
-	// 5. Scale down: iterate auto containers.
+	// 4. Scale down: iterate auto containers.
 	now := time.Now()
-	for _, c := range containers {
-		status, err := r.runtime.GetContainerStatus(ctx, c.Name)
-		if err != nil {
-			r.log.Warn("failed to get container status", "container", c.Name, "error", err)
-			continue
+	pass := &reconcilePass{}
+	removed := make(map[string]bool)
+	for i, c := range containers {
+		status := c.Status
+		if status == domain.StatusUnknown || (availableOnline > 0 && status == domain.StatusStopped) {
+			status, err = r.refreshContainerStatus(ctx, &containers[i])
+			if err != nil {
+				r.log.Warn("failed to get container status", "container", c.Name, "error", err)
+				continue
+			}
+			c.Status = status
 		}
 
 		switch {
 		case status == domain.StatusStopped:
 			// Ephemeral runner finished its job and stopped.
 			r.log.Info("container stopped (job complete)", "event_type", "scale_down", "action", "eligible", "container", c.Name, "runner", c.Name, "detail", "job complete")
-			if err := r.scaleDown(ctx, c.Name, runners); err != nil {
+			if err := r.scaleDown(ctx, c.Name, runners, pass); err != nil {
 				r.log.Warn("scale-down cleanup encountered errors", "container", c.Name, "error", err)
+			} else {
+				autoCount--
+				removed[c.Name] = true
 			}
 
 		case isRunnerBusy(c.Name, runners):
@@ -116,8 +125,11 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 			// This catches containers left behind by crashed scalers,
 			// failed config.sh, or manual intervention.
 			r.log.Info("orphaned container (no registered runner)", "event_type", "scale_down", "action", "eligible", "container", c.Name, "runner", c.Name, "detail", "orphaned container")
-			if err := r.scaleDown(ctx, c.Name, runners); err != nil {
+			if err := r.scaleDown(ctx, c.Name, runners, pass); err != nil {
 				r.log.Warn("scale-down cleanup encountered errors", "container", c.Name, "error", err)
+			} else {
+				autoCount--
+				removed[c.Name] = true
 			}
 
 		default:
@@ -133,10 +145,21 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 				r.log.Info("container idle past timeout",
 					"event_type", "scale_down", "action", "eligible", "container", c.Name, "runner", c.Name, "idle", idleDur.Round(time.Second),
 				)
-				if err := r.scaleDown(ctx, c.Name, runners); err != nil {
+				if err := r.scaleDown(ctx, c.Name, runners, pass); err != nil {
 					r.log.Warn("scale-down cleanup encountered errors", "container", c.Name, "error", err)
+				} else {
+					autoCount--
+					removed[c.Name] = true
 				}
 			}
+		}
+	}
+
+	// 5. Scale up: no online idle runners are available and we're under the cap.
+	if availableOnline == 0 && autoCount < r.cfg.MaxAutoRunners {
+		r.log.Info("all runners busy, scaling up", "event_type", "scale_up", "action", "requested")
+		if err := r.scaleUp(ctx, filterRemovedContainers(containers, removed)); err != nil {
+			r.log.Error("scale-up failed", "event_type", "scale_up", "action", "failed", "error", err)
 		}
 	}
 
@@ -146,23 +169,18 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 // scaleUp provisions a new ephemeral runner container.
 // Preserves the full bash scaler sequence: clone -> cache attach -> start ->
 // wait ready -> symlinks -> config.sh --ephemeral -> svc.sh install+start -> track state.
-func (r *Reconciler) scaleUp(ctx context.Context) error {
-	name, err := r.nextName(ctx)
-	if err != nil {
-		return fmt.Errorf("determining next name: %w", err)
-	}
-
+func (r *Reconciler) scaleUp(ctx context.Context, existing []domain.Container) error {
 	token, err := r.ci.GetRegistrationToken(ctx)
 	if err != nil {
 		return fmt.Errorf("getting registration token: %w", err)
 	}
 
-	r.log.Info("scaling up", "event_type", "scale_up", "action", "started", "container", name, "runner", name)
-
-	// Clone template.
-	if err := r.runtime.CloneFromTemplate(ctx, name); err != nil {
-		return fmt.Errorf("cloning template: %w", err)
+	name, err := r.cloneWithFreshName(ctx, existing)
+	if err != nil {
+		return err
 	}
+
+	r.log.Info("scaling up", "event_type", "scale_up", "action", "started", "container", name, "runner", name)
 
 	// Attach cache volume (optional).
 	if r.cache != nil && r.cfg.CacheEnabled {
@@ -224,8 +242,34 @@ func (r *Reconciler) scaleUp(ctx context.Context) error {
 	return nil
 }
 
+func (r *Reconciler) cloneWithFreshName(ctx context.Context, existing []domain.Container) (string, error) {
+	snapshot := append([]domain.Container(nil), existing...)
+	for attempt := 0; attempt < 3; attempt++ {
+		name := r.nextName(snapshot)
+		if err := r.runtime.CloneFromTemplate(ctx, name); err != nil {
+			if !isContainerNameConflict(err) {
+				return "", fmt.Errorf("cloning template: %w", err)
+			}
+
+			latest, listErr := r.runtime.ListContainers(ctx, r.cfg.Prefix)
+			if listErr != nil {
+				return "", fmt.Errorf("cloning template: %w (refreshing names: %v)", err, listErr)
+			}
+			if len(latest) >= r.cfg.MaxAutoRunners {
+				return "", fmt.Errorf("cloning template: max auto runners reached during concurrent scale-up")
+			}
+
+			snapshot = latest
+			r.log.Warn("container name conflict during clone, retrying", "event_type", "scale_up", "action", "retry", "attempt", attempt+1, "error", err)
+			continue
+		}
+		return name, nil
+	}
+	return "", fmt.Errorf("cloning template: exhausted unique name retries")
+}
+
 // scaleDown tears down a container with belt-and-suspenders deregistration.
-func (r *Reconciler) scaleDown(ctx context.Context, name string, runners []domain.Runner) error {
+func (r *Reconciler) scaleDown(ctx context.Context, name string, runners []domain.Runner, pass *reconcilePass) error {
 	r.log.Info("scaling down", "event_type", "scale_down", "action", "started", "container", name, "runner", name)
 	var errs []error
 
@@ -235,7 +279,7 @@ func (r *Reconciler) scaleDown(ctx context.Context, name string, runners []domai
 	}
 
 	// Deregister via config.sh remove (best-effort).
-	removeToken, err := r.ci.GetRemoveToken(ctx)
+	removeToken, err := r.getRemoveToken(ctx, pass)
 	if err != nil {
 		errs = append(errs, fmt.Errorf("get remove token: %w", err))
 	} else if removeToken != "" {
@@ -279,12 +323,7 @@ func (r *Reconciler) scaleDown(ctx context.Context, name string, runners []domai
 }
 
 // nextName finds the next available container name (e.g. gh-runner-auto-1, -2, ...).
-func (r *Reconciler) nextName(ctx context.Context) (string, error) {
-	existing, err := r.runtime.ListContainers(ctx, r.cfg.Prefix)
-	if err != nil {
-		return "", err
-	}
-
+func (r *Reconciler) nextName(existing []domain.Container) string {
 	used := make(map[string]bool, len(existing))
 	for _, c := range existing {
 		used[c.Name] = true
@@ -293,9 +332,55 @@ func (r *Reconciler) nextName(ctx context.Context) (string, error) {
 	for i := 1; ; i++ {
 		name := fmt.Sprintf("%s-%d", r.cfg.Prefix, i)
 		if !used[name] {
-			return name, nil
+			return name
 		}
 	}
+}
+
+func (r *Reconciler) refreshContainerStatuses(ctx context.Context, containers []domain.Container) []domain.Container {
+	refreshed := append([]domain.Container(nil), containers...)
+	for i := range refreshed {
+		status, err := r.refreshContainerStatus(ctx, &refreshed[i])
+		if err != nil {
+			refreshed[i].Status = domain.StatusUnknown
+			r.log.Warn("failed to refresh container status", "container", refreshed[i].Name, "error", err)
+			continue
+		}
+		refreshed[i].Status = status
+	}
+	return refreshed
+}
+
+func (r *Reconciler) refreshContainerStatus(ctx context.Context, container *domain.Container) (domain.ContainerStatus, error) {
+	status, err := r.runtime.GetContainerStatus(ctx, container.Name)
+	if err != nil {
+		return domain.StatusUnknown, err
+	}
+	container.Status = status
+	return status, nil
+}
+
+func filterRemovedContainers(containers []domain.Container, removed map[string]bool) []domain.Container {
+	if len(removed) == 0 {
+		return append([]domain.Container(nil), containers...)
+	}
+
+	filtered := make([]domain.Container, 0, len(containers)-len(removed))
+	for _, container := range containers {
+		if removed[container.Name] {
+			continue
+		}
+		filtered = append(filtered, container)
+	}
+	return filtered
+}
+
+func isContainerNameConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "already exists") || strings.Contains(msg, "conflict")
 }
 
 // buildSnapshot computes aggregate runner statistics.
@@ -348,6 +433,23 @@ func AvailableRunnerCount(runners []domain.Runner) int {
 		}
 	}
 	return count
+}
+
+func (r *Reconciler) getRemoveToken(ctx context.Context, pass *reconcilePass) (string, error) {
+	if pass == nil {
+		return r.ci.GetRemoveToken(ctx)
+	}
+	if pass.removeTokenFetched {
+		return pass.removeToken, nil
+	}
+
+	removeToken, err := r.ci.GetRemoveToken(ctx)
+	if err != nil {
+		return "", err
+	}
+	pass.removeToken = removeToken
+	pass.removeTokenFetched = true
+	return pass.removeToken, nil
 }
 
 func (r *Reconciler) cleanupFailedScaleUp(ctx context.Context, name string, attemptStop bool) error {

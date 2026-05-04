@@ -15,17 +15,25 @@ import (
 // --- Mock providers ---
 
 type mockRuntime struct {
-	mu         sync.Mutex
-	containers map[string]domain.ContainerStatus
-	execCalls  [][]string
-	cloneErr   error
-	execErr    error
-	stopErr    error
-	deleteErr  error
+	mu          sync.Mutex
+	containers  map[string]domain.ContainerStatus
+	listed      map[string]domain.ContainerStatus
+	execCalls   [][]string
+	listCalls   int
+	statusCalls int
+	cloneHook   func(name string) error
+	statusErr   map[string]error
+	cloneErr    error
+	execErr     error
+	stopErr     error
+	deleteErr   error
 }
 
 func newMockRuntime() *mockRuntime {
-	return &mockRuntime{containers: make(map[string]domain.ContainerStatus)}
+	return &mockRuntime{
+		containers: make(map[string]domain.ContainerStatus),
+		statusErr:  make(map[string]error),
+	}
 }
 
 func (m *mockRuntime) CloneFromTemplate(_ context.Context, name string) error {
@@ -33,6 +41,11 @@ func (m *mockRuntime) CloneFromTemplate(_ context.Context, name string) error {
 	defer m.mu.Unlock()
 	if m.cloneErr != nil {
 		return m.cloneErr
+	}
+	if m.cloneHook != nil {
+		if err := m.cloneHook(name); err != nil {
+			return err
+		}
 	}
 	m.containers[name] = domain.StatusStopped
 	return nil
@@ -79,8 +92,13 @@ func (m *mockRuntime) WaitForReady(_ context.Context, _ string, _ []string, _ ti
 func (m *mockRuntime) ListContainers(_ context.Context, prefix string) ([]domain.Container, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.listCalls++
 	var result []domain.Container
-	for name, status := range m.containers {
+	source := m.containers
+	if m.listed != nil {
+		source = m.listed
+	}
+	for name, status := range source {
 		if len(prefix) == 0 || len(name) >= len(prefix) && name[:len(prefix)] == prefix {
 			result = append(result, domain.Container{Name: name, Status: status})
 		}
@@ -91,6 +109,10 @@ func (m *mockRuntime) ListContainers(_ context.Context, prefix string) ([]domain
 func (m *mockRuntime) GetContainerStatus(_ context.Context, name string) (domain.ContainerStatus, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.statusCalls++
+	if err := m.statusErr[name]; err != nil {
+		return domain.StatusUnknown, err
+	}
 	s, ok := m.containers[name]
 	if !ok {
 		return domain.StatusUnknown, fmt.Errorf("not found: %s", name)
@@ -104,6 +126,7 @@ type mockCI struct {
 	removeToken string
 	deletedIDs  []int64
 	prefix      string
+	removeCalls int
 }
 
 func (m *mockCI) ListRunners(_ context.Context) ([]domain.Runner, error) {
@@ -115,6 +138,7 @@ func (m *mockCI) GetRegistrationToken(_ context.Context) (string, error) {
 }
 
 func (m *mockCI) GetRemoveToken(_ context.Context) (string, error) {
+	m.removeCalls++
 	return m.removeToken, nil
 }
 
@@ -137,6 +161,10 @@ func (m *mockCI) ParseWebhookEvent(_ string, _ []byte) (*domain.WebhookEvent, er
 
 func (m *mockCI) ListRecentWorkflowRuns(_ context.Context, _ int) ([]domain.WorkflowMetrics, error) {
 	return nil, nil
+}
+
+func (m *mockCI) EnrichWorkflowMetrics(_ context.Context, runs []domain.WorkflowMetrics) ([]domain.WorkflowMetrics, error) {
+	return append([]domain.WorkflowMetrics(nil), runs...), nil
 }
 
 type mockCache struct {
@@ -245,6 +273,38 @@ func TestScaleUp_WhenAllBusy(t *testing.T) {
 	if _, ok := runtime.containers["auto-1"]; !ok {
 		t.Error("expected auto-1 container to be created")
 	}
+	if runtime.listCalls != 1 {
+		t.Fatalf("expected one container listing, got %d", runtime.listCalls)
+	}
+}
+
+func TestScaleUp_ReusesExistingContainerSnapshotForNextName(t *testing.T) {
+	runtime := newMockRuntime()
+	runtime.containers["auto-1"] = domain.StatusRunning
+
+	ci := &mockCI{
+		runners: []domain.Runner{
+			{ID: 1, Name: "permanent", Busy: true, Status: "online"},
+			{ID: 2, Name: "auto-1", Busy: true, Status: "online"},
+		},
+		regToken: "test-token",
+		prefix:   "auto",
+	}
+	state := newMockState()
+	r := newTestReconciler(runtime, ci, state, nil)
+
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if _, ok := runtime.containers["auto-2"]; !ok {
+		t.Fatal("expected auto-2 container to be created")
+	}
+	if runtime.listCalls != 1 {
+		t.Fatalf("expected one container listing, got %d", runtime.listCalls)
+	}
 }
 
 func TestNoScaleUp_WhenIdleRunnerExists(t *testing.T) {
@@ -330,7 +390,10 @@ func TestScaleDown_StoppedContainer(t *testing.T) {
 	runtime.containers["auto-1"] = domain.StatusStopped
 
 	ci := &mockCI{
-		runners:     []domain.Runner{{ID: 1, Name: "auto-1", Busy: false, Status: "offline"}},
+		runners: []domain.Runner{
+			{ID: 1, Name: "auto-1", Busy: false, Status: "offline"},
+			{ID: 2, Name: "permanent", Busy: false, Status: "online"},
+		},
 		removeToken: "remove-token",
 		prefix:      "auto",
 	}
@@ -354,6 +417,108 @@ func TestScaleDown_StoppedContainer(t *testing.T) {
 	defer state.mu.Unlock()
 	if _, ok := state.states["auto-1"]; ok {
 		t.Error("state should have been cleaned up")
+	}
+	if runtime.statusCalls != 1 {
+		t.Fatalf("expected listed stopped status to be refreshed before deletion, got %d lookups", runtime.statusCalls)
+	}
+}
+
+func TestReconcile_RefreshesContainerStatusesBeforeScaleUpCapacityDecision(t *testing.T) {
+	runtime := newMockRuntime()
+	runtime.listed = map[string]domain.ContainerStatus{"auto-1": domain.StatusRunning}
+	runtime.containers["auto-1"] = domain.StatusStopped
+
+	ci := &mockCI{
+		runners:     []domain.Runner{{ID: 1, Name: "auto-1", Busy: true, Status: "online"}},
+		regToken:    "test-token",
+		removeToken: "remove-token",
+		prefix:      "auto",
+	}
+	state := newMockState()
+	state.states["auto-1"] = time.Now()
+
+	r := newTestReconciler(runtime, ci, state, nil)
+	r.cfg.MaxAutoRunners = 1
+
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if runtime.statusCalls == 0 {
+		t.Fatal("expected live status refresh when no idle runners are available")
+	}
+	if status := runtime.containers["auto-1"]; status != domain.StatusRunning {
+		t.Fatalf("auto-1 status = %v, want running after replacement scale-up", status)
+	}
+	if len(ci.deletedIDs) != 1 || ci.deletedIDs[0] != 1 {
+		t.Fatalf("deleted runner IDs = %v, want [1]", ci.deletedIDs)
+	}
+}
+
+func TestReconcile_DoesNotDeleteStoppedSnapshotWhenLiveRefreshFails(t *testing.T) {
+	runtime := newMockRuntime()
+	runtime.listed = map[string]domain.ContainerStatus{"auto-1": domain.StatusStopped}
+	runtime.containers["auto-1"] = domain.StatusRunning
+	runtime.statusErr["auto-1"] = errors.New("status lookup failed")
+
+	ci := &mockCI{
+		runners: []domain.Runner{
+			{ID: 1, Name: "auto-1", Busy: true, Status: "online"},
+		},
+		regToken:    "test-token",
+		removeToken: "remove-token",
+		prefix:      "auto",
+	}
+	state := newMockState()
+	state.states["auto-1"] = time.Now()
+
+	r := newTestReconciler(runtime, ci, state, nil)
+	r.cfg.MaxAutoRunners = 1
+
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if _, ok := runtime.containers["auto-1"]; !ok {
+		t.Fatal("expected container to remain when live status refresh fails")
+	}
+	if len(ci.deletedIDs) != 0 {
+		t.Fatalf("deleted runner IDs = %v, want none", ci.deletedIDs)
+	}
+}
+
+func TestReconcile_RefreshesListedStoppedContainerBeforeDeletingIt(t *testing.T) {
+	runtime := newMockRuntime()
+	runtime.listed = map[string]domain.ContainerStatus{"auto-1": domain.StatusStopped}
+	runtime.containers["auto-1"] = domain.StatusRunning
+
+	ci := &mockCI{
+		runners: []domain.Runner{
+			{ID: 1, Name: "auto-1", Busy: false, Status: "online"},
+			{ID: 2, Name: "permanent", Busy: false, Status: "online"},
+		},
+		removeToken: "remove-token",
+		prefix:      "auto",
+	}
+	state := newMockState()
+	state.states["auto-1"] = time.Now()
+
+	r := newTestReconciler(runtime, ci, state, nil)
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if _, ok := runtime.containers["auto-1"]; !ok {
+		t.Fatal("expected running container to survive stale listed stopped status")
+	}
+	if len(ci.deletedIDs) != 0 {
+		t.Fatalf("deleted runner IDs = %v, want none", ci.deletedIDs)
 	}
 }
 
@@ -481,7 +646,7 @@ func TestScaleDown_ReturnsCleanupErrors(t *testing.T) {
 
 	r := newTestReconciler(runtime, ci, state, nil)
 
-	err := r.scaleDown(context.Background(), "auto-1", ci.runners)
+	err := r.scaleDown(context.Background(), "auto-1", ci.runners, &reconcilePass{removeToken: ci.removeToken, removeTokenFetched: true})
 	if err == nil {
 		t.Fatal("expected scaleDown to return cleanup errors")
 	}
@@ -493,6 +658,91 @@ func TestScaleDown_ReturnsCleanupErrors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "delete state") {
 		t.Fatalf("expected delete state error in %v", err)
+	}
+}
+
+func TestReconcile_CachesRemoveTokenAcrossScaleDownsInOnePass(t *testing.T) {
+	runtime := newMockRuntime()
+	runtime.containers["auto-1"] = domain.StatusStopped
+	runtime.containers["auto-2"] = domain.StatusStopped
+
+	ci := &mockCI{
+		runners: []domain.Runner{
+			{ID: 1, Name: "auto-1", Busy: false, Status: "offline"},
+			{ID: 2, Name: "auto-2", Busy: false, Status: "offline"},
+		},
+		removeToken: "remove-token",
+		prefix:      "auto",
+	}
+	state := newMockState()
+	state.states["auto-1"] = time.Now()
+	state.states["auto-2"] = time.Now()
+
+	r := newTestReconciler(runtime, ci, state, nil)
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+	if ci.removeCalls != 1 {
+		t.Fatalf("GetRemoveToken calls = %d, want 1", ci.removeCalls)
+	}
+}
+
+func TestReconcile_FallsBackToStatusLookupWhenListedStatusUnknown(t *testing.T) {
+	runtime := newMockRuntime()
+	runtime.containers["auto-1"] = domain.StatusUnknown
+
+	ci := &mockCI{
+		runners:     []domain.Runner{{ID: 1, Name: "auto-1", Busy: false, Status: "offline"}},
+		removeToken: "remove-token",
+		prefix:      "auto",
+	}
+	state := newMockState()
+	state.states["auto-1"] = time.Now()
+
+	r := newTestReconciler(runtime, ci, state, nil)
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+	if runtime.statusCalls == 0 {
+		t.Fatal("expected unknown listed status to trigger a direct status lookup")
+	}
+}
+
+func TestScaleUp_RetriesAfterContainerNameConflict(t *testing.T) {
+	runtime := newMockRuntime()
+	runtime.containers["auto-1"] = domain.StatusRunning
+	collided := false
+	runtime.cloneHook = func(name string) error {
+		if name == "auto-2" && !collided {
+			collided = true
+			runtime.containers["auto-2"] = domain.StatusRunning
+			return errors.New("instance already exists")
+		}
+		return nil
+	}
+
+	ci := &mockCI{
+		runners: []domain.Runner{
+			{ID: 1, Name: "permanent", Busy: true, Status: "online"},
+			{ID: 2, Name: "auto-1", Busy: true, Status: "online"},
+		},
+		regToken: "test-token",
+		prefix:   "auto",
+	}
+	state := newMockState()
+	r := newTestReconciler(runtime, ci, state, nil)
+
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if _, ok := runtime.containers["auto-3"]; !ok {
+		t.Fatalf("expected retry to create auto-3 after conflict, containers = %#v", runtime.containers)
+	}
+	if runtime.listCalls != 2 {
+		t.Fatalf("expected conflict retry to refresh container list, got %d list calls", runtime.listCalls)
 	}
 }
 

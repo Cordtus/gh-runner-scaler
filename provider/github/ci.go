@@ -128,6 +128,20 @@ func (p *Provider) ClassifyRunner(name string) bool {
 
 // ListRecentWorkflowRuns returns completed workflow runs across all org repos.
 func (p *Provider) ListRecentWorkflowRuns(ctx context.Context, perRepo int) ([]domain.WorkflowMetrics, error) {
+	runs, err := p.ListRecentWorkflowRunsShallow(ctx, perRepo)
+	if err != nil || len(runs) == 0 {
+		return runs, err
+	}
+
+	enriched, _ := p.EnrichWorkflowMetrics(ctx, runs)
+	if len(enriched) > 0 {
+		runs = enriched
+	}
+	return runs, nil
+}
+
+// ListRecentWorkflowRunsShallow returns completed workflow runs without failure-job enrichment.
+func (p *Provider) ListRecentWorkflowRunsShallow(ctx context.Context, perRepo int) ([]domain.WorkflowMetrics, error) {
 	if perRepo <= 0 {
 		return nil, nil
 	}
@@ -177,16 +191,40 @@ func (p *Provider) ListRecentWorkflowRuns(ctx context.Context, perRepo int) ([]d
 				Branch:      run.GetHeadBranch(),
 				CompletedAt: completedAt,
 			})
-			if shouldEnrichWorkflowFailure(run.GetConclusion()) {
-				metric := &results[len(results)-1]
-				failedJob, failedStep, failureReason := p.hydrateWorkflowFailureDetails(ctx, repo, run)
-				metric.FailedJob = failedJob
-				metric.FailedStep = failedStep
-				metric.FailureReason = failureReason
-			}
 		}
 	}
 	return results, nil
+}
+
+// EnrichWorkflowMetrics hydrates failure details only for fresh failed workflow runs.
+func (p *Provider) EnrichWorkflowMetrics(ctx context.Context, runs []domain.WorkflowMetrics) ([]domain.WorkflowMetrics, error) {
+	if len(runs) == 0 {
+		return nil, nil
+	}
+
+	enriched := append([]domain.WorkflowMetrics(nil), runs...)
+	var firstErr error
+	for i, run := range enriched {
+		if !shouldEnrichWorkflowFailure(run.Conclusion) {
+			continue
+		}
+
+		failedJob, failedStep, failureReason, err := p.hydrateWorkflowFailureDetails(
+			ctx,
+			run.Repo,
+			run.RunID,
+			run.RunAttempt,
+			run.Conclusion,
+		)
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+		enriched[i].FailedJob = failedJob
+		enriched[i].FailedStep = failedStep
+		enriched[i].FailureReason = failureReason
+	}
+
+	return enriched, firstErr
 }
 
 func (p *Provider) listOrgRepos(ctx context.Context) ([]string, error) {

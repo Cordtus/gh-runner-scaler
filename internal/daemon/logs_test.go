@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -152,5 +154,143 @@ func TestHandleLogs_RejectsInvalidSinceFilter(t *testing.T) {
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", recorder.Code)
+	}
+}
+
+func TestLogStore_RecordCompactsAfterRetentionTrim(t *testing.T) {
+	store, err := NewLogStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLogStore returned error: %v", err)
+	}
+	store.maxEntries = 2
+	store.compactAt = 2
+
+	for i := 0; i < 3; i++ {
+		if err := store.Record(domain.LogEntry{
+			Time:      time.Date(2026, 5, 4, 12, i, 0, 0, time.UTC),
+			Level:     "INFO",
+			Message:   "entry",
+			EventType: "workflow_job",
+			Action:    "completed",
+			JobID:     int64(i + 1),
+		}); err != nil {
+			t.Fatalf("Record %d returned error: %v", i, err)
+		}
+	}
+
+	_, entries := store.SnapshotWithVersion()
+	if len(entries) != 2 {
+		t.Fatalf("snapshot len = %d, want 2", len(entries))
+	}
+	if entries[0].JobID != 2 || entries[1].JobID != 3 {
+		t.Fatalf("snapshot job IDs = [%d %d], want [2 3]", entries[0].JobID, entries[1].JobID)
+	}
+
+	data, err := os.ReadFile(store.path)
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("persisted line count = %d, want 2", len(lines))
+	}
+}
+
+func TestNewLogStore_IgnoresMalformedTrailingLine(t *testing.T) {
+	stateDir := t.TempDir()
+	path := stateDir + "/" + logStoreFile
+	validEntry := `{"time":"2026-05-04T12:00:00Z","level":"INFO","message":"ok","event_type":"workflow_job","action":"completed","job_id":7}` + "\n"
+	if err := os.WriteFile(path, []byte(validEntry+`{"time":"broken"`), 0o644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	store, err := NewLogStore(stateDir)
+	if err != nil {
+		t.Fatalf("NewLogStore returned error: %v", err)
+	}
+
+	entries := store.Query(logQuery{Limit: 10})
+	if len(entries) != 1 {
+		t.Fatalf("entries len = %d, want 1", len(entries))
+	}
+	if entries[0].JobID != 7 {
+		t.Fatalf("job ID = %d, want 7", entries[0].JobID)
+	}
+}
+
+func TestNewLogStore_RejectsMalformedPersistedEntry(t *testing.T) {
+	stateDir := t.TempDir()
+	path := stateDir + "/" + logStoreFile
+	data := strings.Join([]string{
+		`{"time":"2026-05-04T12:00:00Z","level":"INFO","message":"ok","event_type":"workflow_job","action":"completed","job_id":7}`,
+		`{"time":}`,
+		`{"time":"2026-05-04T12:01:00Z","level":"INFO","message":"still-ok","event_type":"workflow_job","action":"completed","job_id":8}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	_, err := NewLogStore(stateDir)
+	if err == nil {
+		t.Fatal("expected malformed persisted entry to fail load")
+	}
+	if !strings.Contains(err.Error(), "line 2") {
+		t.Fatalf("error = %v, want line reference", err)
+	}
+}
+
+func TestNewLogStore_IgnoresTruncatedTrailingLiteral(t *testing.T) {
+	stateDir := t.TempDir()
+	path := stateDir + "/" + logStoreFile
+	validEntry := `{"time":"2026-05-04T12:00:00Z","level":"INFO","message":"ok","event_type":"workflow_job","action":"completed","job_id":7}` + "\n"
+	if err := os.WriteFile(path, []byte(validEntry+`{"time":"2026-05-04T12:01:00Z","level":"INFO","message":"cut","event_type":"workflow_job","action":"completed","attributes":{"flag":tru`), 0o644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	store, err := NewLogStore(stateDir)
+	if err != nil {
+		t.Fatalf("NewLogStore returned error: %v", err)
+	}
+
+	entries := store.Query(logQuery{Limit: 10})
+	if len(entries) != 1 {
+		t.Fatalf("entries len = %d, want 1", len(entries))
+	}
+	if entries[0].JobID != 7 {
+		t.Fatalf("job ID = %d, want 7", entries[0].JobID)
+	}
+}
+
+func TestNewLogStore_RejectsMalformedTrailingLiteral(t *testing.T) {
+	stateDir := t.TempDir()
+	path := stateDir + "/" + logStoreFile
+	validEntry := `{"time":"2026-05-04T12:00:00Z","level":"INFO","message":"ok","event_type":"workflow_job","action":"completed","job_id":7}` + "\n"
+	if err := os.WriteFile(path, []byte(validEntry+`{"time":"2026-05-04T12:01:00Z","level":"INFO","message":"bad","event_type":"workflow_job","action":"completed","attributes":{"flag":trux}`), 0o644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	_, err := NewLogStore(stateDir)
+	if err == nil {
+		t.Fatal("expected malformed trailing literal to fail load")
+	}
+	if !strings.Contains(err.Error(), "line 2") {
+		t.Fatalf("error = %v, want line reference", err)
+	}
+}
+
+func TestNewLogStore_RejectsMixedCaseTrailingLiteralFragment(t *testing.T) {
+	stateDir := t.TempDir()
+	path := stateDir + "/" + logStoreFile
+	validEntry := `{"time":"2026-05-04T12:00:00Z","level":"INFO","message":"ok","event_type":"workflow_job","action":"completed","job_id":7}` + "\n"
+	if err := os.WriteFile(path, []byte(validEntry+`{"time":"2026-05-04T12:01:00Z","level":"INFO","message":"bad","event_type":"workflow_job","action":"completed","attributes":{"flag":Tr`), 0o644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	_, err := NewLogStore(stateDir)
+	if err == nil {
+		t.Fatal("expected mixed-case trailing literal fragment to fail load")
+	}
+	if !strings.Contains(err.Error(), "line 2") {
+		t.Fatalf("error = %v, want line reference", err)
 	}
 }

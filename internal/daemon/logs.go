@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -12,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/Cordtus/gh-runner-scaler/internal/domain"
 )
@@ -27,9 +30,12 @@ const (
 type LogStore struct {
 	path       string
 	maxEntries int
+	compactAt  int
 
-	mu      sync.RWMutex
-	entries []domain.LogEntry
+	mu          sync.RWMutex
+	entries     []domain.LogEntry
+	fileEntries int
+	version     uint64
 }
 
 type logQuery struct {
@@ -63,6 +69,7 @@ func NewLogStore(stateDir string) (*LogStore, error) {
 	store := &LogStore{
 		path:       filepath.Join(stateDir, logStoreFile),
 		maxEntries: defaultLogStoreLimit,
+		compactAt:  defaultLogStoreLimit * 2,
 	}
 	if err := store.load(); err != nil {
 		return nil, err
@@ -80,34 +87,95 @@ func (s *LogStore) load() error {
 	}
 	defer file.Close()
 
-	var entries []domain.LogEntry
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+	var (
+		entries         []domain.LogEntry
+		fileEntries     int
+		needsCompaction bool
+	)
+	reader := bufio.NewReaderSize(file, 64*1024)
+	for lineNum := 1; ; lineNum++ {
+		rawLine, readErr := reader.ReadString('\n')
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return fmt.Errorf("reading log store %s: %w", s.path, readErr)
+		}
+
+		line := strings.TrimSpace(rawLine)
 		if line == "" {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
 			continue
 		}
+
 		var entry domain.LogEntry
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			return fmt.Errorf("decoding log entry from %s: %w", s.path, err)
+			if errors.Is(readErr, io.EOF) && isTruncatedLogEntry(line, err) {
+				needsCompaction = true
+				break
+			}
+			return fmt.Errorf("decoding log store %s line %d: %w", s.path, lineNum, err)
 		}
+		entry.Time = entry.Time.UTC()
 		if entry.Attributes != nil && len(entry.Attributes) == 0 {
 			entry.Attributes = nil
 		}
 		entries = append(entries, entry)
-	}
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("reading log store %s: %w", s.path, err)
+		fileEntries++
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
 	}
 
 	if len(entries) > s.maxEntries {
 		entries = append([]domain.LogEntry(nil), entries[len(entries)-s.maxEntries:]...)
+		needsCompaction = true
 	}
 
 	s.mu.Lock()
 	s.entries = entries
+	s.fileEntries = fileEntries
 	s.mu.Unlock()
+
+	if needsCompaction {
+		s.mu.Lock()
+		err := s.compactLocked()
+		s.mu.Unlock()
+		if err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func isTruncatedLogEntry(line string, err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "unexpected end of JSON input") || strings.Contains(msg, "unexpected EOF") {
+		return true
+	}
+
+	switch trailingLiteralFragment(line) {
+	case "t", "tr", "tru", "f", "fa", "fal", "fals", "n", "nu", "nul":
+		return true
+	default:
+		return false
+	}
+}
+
+func trailingLiteralFragment(line string) string {
+	line = strings.TrimRightFunc(line, unicode.IsSpace)
+	end := len(line)
+	start := end
+	for start > 0 {
+		r := rune(line[start-1])
+		if !unicode.IsLetter(r) {
+			break
+		}
+		start--
+	}
+	return line[start:end]
 }
 
 // Record appends a new log entry and persists the bounded buffer to disk.
@@ -121,11 +189,27 @@ func (s *LogStore) Record(entry domain.LogEntry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	line, err := encodeLogEntry(entry)
+	if err != nil {
+		return err
+	}
+	if err := s.appendLocked(line); err != nil {
+		return err
+	}
+
 	s.entries = append(s.entries, entry)
+	s.fileEntries++
+	s.version++
+
+	trimmed := false
 	if len(s.entries) > s.maxEntries {
 		s.entries = append([]domain.LogEntry(nil), s.entries[len(s.entries)-s.maxEntries:]...)
+		trimmed = true
 	}
-	return s.persistLocked()
+	if trimmed || (s.compactAt > 0 && s.fileEntries > s.compactAt) {
+		return s.compactLocked()
+	}
+	return nil
 }
 
 // Query returns the newest matching log entries first.
@@ -150,18 +234,54 @@ func (s *LogStore) Query(query logQuery) []domain.LogEntry {
 
 // Snapshot returns a stable copy of all retained log entries in chronological order.
 func (s *LogStore) Snapshot() []domain.LogEntry {
+	_, entries := s.SnapshotWithVersion()
+	return entries
+}
+
+// Version returns the current mutation version for the retained log buffer.
+func (s *LogStore) Version() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.version
+}
+
+// SnapshotWithVersion returns a stable copy of all retained log entries plus the current mutation version.
+func (s *LogStore) SnapshotWithVersion() (uint64, []domain.LogEntry) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	if len(s.entries) == 0 {
-		return nil
+		return s.version, nil
 	}
 	entries := make([]domain.LogEntry, len(s.entries))
 	copy(entries, s.entries)
-	return entries
+	return s.version, entries
 }
 
-func (s *LogStore) persistLocked() error {
+func encodeLogEntry(entry domain.LogEntry) ([]byte, error) {
+	payload, err := json.Marshal(entry)
+	if err != nil {
+		return nil, fmt.Errorf("encoding log entry: %w", err)
+	}
+	return append(payload, '\n'), nil
+}
+
+func (s *LogStore) appendLocked(line []byte) error {
+	file, err := os.OpenFile(s.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("opening log store for append: %w", err)
+	}
+	if _, err := file.Write(line); err != nil {
+		file.Close()
+		return fmt.Errorf("appending log entry: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("closing appended log store file: %w", err)
+	}
+	return nil
+}
+
+func (s *LogStore) compactLocked() error {
 	tmp, err := os.CreateTemp(filepath.Dir(s.path), "daemon-logs-*.tmp")
 	if err != nil {
 		return fmt.Errorf("creating log store temp file: %w", err)
@@ -183,6 +303,8 @@ func (s *LogStore) persistLocked() error {
 		os.Remove(tmp.Name())
 		return fmt.Errorf("renaming log store temp file: %w", err)
 	}
+
+	s.fileEntries = len(s.entries)
 	return nil
 }
 

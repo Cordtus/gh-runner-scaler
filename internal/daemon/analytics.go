@@ -20,13 +20,20 @@ func (d *Daemon) collectLogDerivedMetrics(ctx context.Context) {
 		return
 	}
 
-	entries := d.logStore.Snapshot()
-	lifecycle := buildLifecycleMetrics(entries)
+	version := d.logStore.Version()
+	lifecycle, issueCandidates, cached := d.cachedLogDerivedMetrics(version)
+	if !cached {
+		var entries []domain.LogEntry
+		version, entries = d.logStore.SnapshotWithVersion()
+		lifecycle = buildLifecycleMetrics(entries)
+		issueCandidates = selectIssueLogEntries(entries)
+		d.storeLogDerivedMetrics(version, lifecycle, issueCandidates)
+	}
 	if err := d.metrics.PushLifecycleMetrics(ctx, lifecycle); err != nil {
 		d.log.Error("failed to push lifecycle metrics", "error", err)
 	}
 
-	issueEntries := d.filterNewIssueEntries(selectIssueLogEntries(entries))
+	issueEntries := d.filterNewIssueEntries(issueCandidates)
 	if len(issueEntries) == 0 {
 		return
 	}
@@ -41,6 +48,26 @@ func (d *Daemon) collectLogDerivedMetrics(ctx context.Context) {
 		return
 	}
 	d.markIssueEntriesDelivered(issueEntries)
+}
+
+func (d *Daemon) cachedLogDerivedMetrics(version uint64) (domain.LifecycleMetrics, []domain.LogEntry, bool) {
+	d.analyticsMu.Lock()
+	defer d.analyticsMu.Unlock()
+
+	if d.logAnalyticsCached && d.logAnalyticsVersion == version {
+		return d.cachedLifecycleMetrics, append([]domain.LogEntry(nil), d.cachedIssueLogEntries...), true
+	}
+	return domain.LifecycleMetrics{}, nil, false
+}
+
+func (d *Daemon) storeLogDerivedMetrics(version uint64, lifecycle domain.LifecycleMetrics, issueEntries []domain.LogEntry) {
+	d.analyticsMu.Lock()
+	defer d.analyticsMu.Unlock()
+
+	d.cachedLifecycleMetrics = lifecycle
+	d.cachedIssueLogEntries = append(d.cachedIssueLogEntries[:0], issueEntries...)
+	d.logAnalyticsVersion = version
+	d.logAnalyticsCached = true
 }
 
 func selectIssueLogEntries(entries []domain.LogEntry) []domain.LogEntry {

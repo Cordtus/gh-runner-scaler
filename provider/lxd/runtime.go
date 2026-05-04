@@ -372,16 +372,35 @@ func (r *Runtime) GetContainerStatus(_ context.Context, name string) (domain.Con
 	return mapStatus(state.Status), nil
 }
 
-// HostMetrics collects container counts and storage pool usage for metrics.
+// HostMetrics collects host-wide container counts and storage pool usage for metrics.
 func (r *Runtime) HostMetrics(cachePool string) (domain.HostMetrics, error) {
-	instances, err := r.server.GetInstances(lxdclient.GetInstancesArgs{InstanceType: api.InstanceTypeContainer})
-	if err != nil {
-		return domain.HostMetrics{}, fmt.Errorf("listing containers: %w", err)
+	return r.hostMetrics(cachePool, nil)
+}
+
+// HostMetricsFromContainers collects host-wide metrics using a caller-provided container snapshot
+// to avoid a second full instance listing when the caller already has one.
+func (r *Runtime) HostMetricsFromContainers(cachePool string, containers []domain.Container) (domain.HostMetrics, error) {
+	return r.hostMetrics(cachePool, containers)
+}
+
+func (r *Runtime) hostMetrics(cachePool string, containers []domain.Container) (domain.HostMetrics, error) {
+	var m domain.HostMetrics
+	if containers == nil {
+		instances, err := r.server.GetInstances(lxdclient.GetInstancesArgs{InstanceType: api.InstanceTypeContainer})
+		if err != nil {
+			return domain.HostMetrics{}, fmt.Errorf("listing containers: %w", err)
+		}
+		containers = make([]domain.Container, 0, len(instances))
+		for _, inst := range instances {
+			containers = append(containers, domain.Container{
+				Name:   inst.Name,
+				Status: mapStatus(inst.Status),
+			})
+		}
 	}
 
-	var m domain.HostMetrics
-	for _, inst := range instances {
-		switch mapStatus(inst.Status) {
+	for _, container := range containers {
+		switch container.Status {
 		case domain.StatusRunning:
 			m.ContainersRunning++
 		case domain.StatusStopped:

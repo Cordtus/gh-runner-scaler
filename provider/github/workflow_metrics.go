@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"time"
 
@@ -17,14 +18,13 @@ func shouldEnrichWorkflowFailure(conclusion string) bool {
 	}
 }
 
-func (p *Provider) hydrateWorkflowFailureDetails(ctx context.Context, repo string, run *gh.WorkflowRun) (string, string, string) {
-	if run == nil {
-		return "", "", ""
+func (p *Provider) hydrateWorkflowFailureDetails(ctx context.Context, repo string, runID int64, attempt int, conclusion string) (string, string, string, error) {
+	jobs, err := p.listWorkflowJobsForRun(ctx, repo, runID, attempt)
+	if err != nil {
+		return "", "", conclusion, fmt.Errorf("listing workflow jobs for %s run %d attempt %d: %w", repo, runID, attempt, err)
 	}
-
-	jobs, err := p.listWorkflowJobsForRun(ctx, repo, run.GetID(), run.GetRunAttempt())
-	if err != nil || len(jobs) == 0 {
-		return "", "", run.GetConclusion()
+	if len(jobs) == 0 {
+		return "", "", conclusion, nil
 	}
 
 	sort.SliceStable(jobs, func(i, j int) bool {
@@ -37,16 +37,16 @@ func (p *Provider) hydrateWorkflowFailureDetails(ctx context.Context, repo strin
 		}
 
 		failedStep := firstFailedStep(job)
-		reason := run.GetConclusion()
+		reason := conclusion
 		if failedStep != "" {
 			reason = failedStep
 		} else if conclusion := job.GetConclusion(); conclusion != "" {
 			reason = conclusion
 		}
-		return job.GetName(), failedStep, reason
+		return job.GetName(), failedStep, reason, nil
 	}
 
-	return "", "", run.GetConclusion()
+	return "", "", conclusion, nil
 }
 
 func (p *Provider) listWorkflowJobsForRun(ctx context.Context, repo string, runID int64, attempt int) ([]*gh.WorkflowJob, error) {

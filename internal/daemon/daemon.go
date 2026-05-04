@@ -55,6 +55,12 @@ type Daemon struct {
 	issueDelivered     map[string]struct{}
 	issueDeliveredKeys []string
 
+	analyticsMu            sync.Mutex
+	logAnalyticsCached     bool
+	logAnalyticsVersion    uint64
+	cachedLifecycleMetrics domain.LifecycleMetrics
+	cachedIssueLogEntries  []domain.LogEntry
+
 	reconcileRunning          bool
 	triggerSeq                uint64
 	reconcileRuns             uint64
@@ -388,18 +394,24 @@ func (d *Daemon) collectAndPush(ctx context.Context) {
 	runners, err := d.ci.ListRunners(ctx)
 	if err != nil {
 		d.log.Error("failed to list runners for metrics", "error", err)
-	} else {
-		var containers []domain.Container
-		if d.runtime != nil {
-			listed, listErr := d.runtime.ListContainers(ctx, d.cfg.Prefix)
-			if listErr != nil {
-				d.log.Warn("failed to list containers for runner metrics", "error", listErr)
-			} else {
-				containers = listed
-			}
-		}
+	}
 
-		rm := buildRunnerMetrics(runners, containers, d.ci)
+	var allContainers []domain.Container
+	var autoContainers []domain.Container
+	containersLoaded := false
+	if d.runtime != nil && (d.cfg.CollectHost || err == nil) {
+		listed, listErr := d.runtime.ListContainers(ctx, "")
+		if listErr != nil {
+			d.log.Warn("failed to list containers for metrics", "error", listErr)
+		} else {
+			containersLoaded = true
+			allContainers = append([]domain.Container{}, listed...)
+			autoContainers = filterContainersByPrefix(listed, d.cfg.Prefix)
+		}
+	}
+
+	if err == nil {
+		rm := buildRunnerMetrics(runners, autoContainers, d.ci)
 		if err := d.metrics.PushRunnerMetrics(ctx, rm); err != nil {
 			d.log.Error("failed to push runner metrics", "error", err)
 		}
@@ -407,11 +419,20 @@ func (d *Daemon) collectAndPush(ctx context.Context) {
 
 	// Workflow metrics.
 	if d.cfg.CollectWorkflows {
-		wm, err := d.ci.ListRecentWorkflowRuns(ctx, workflowMetricRunFetchLimit)
+		wm, needsEnrichment, err := d.listWorkflowMetrics(ctx)
 		if err != nil {
 			d.log.Warn("failed to collect workflow metrics", "error", err)
 		} else if len(wm) > 0 {
 			wm = d.filterNewWorkflowMetrics(wm)
+		}
+		if len(wm) > 0 && needsEnrichment {
+			enriched, enrichErr := d.ci.EnrichWorkflowMetrics(ctx, wm)
+			if len(enriched) > 0 {
+				wm = enriched
+			}
+			if enrichErr != nil {
+				d.log.Warn("failed to enrich workflow metrics", "error", enrichErr)
+			}
 		}
 		if len(wm) > 0 {
 			if err := d.metrics.PushWorkflowMetrics(ctx, wm); err != nil {
@@ -424,7 +445,7 @@ func (d *Daemon) collectAndPush(ctx context.Context) {
 
 	// Host metrics (requires runtime to support it).
 	if d.cfg.CollectHost {
-		d.collectHostMetrics(ctx)
+		d.collectHostMetrics(ctx, allContainers, autoContainers, containersLoaded)
 	}
 
 	d.collectLogDerivedMetrics(ctx)
@@ -432,24 +453,38 @@ func (d *Daemon) collectAndPush(ctx context.Context) {
 
 // collectHostMetrics attempts to gather host-level metrics from the runtime.
 // This is provider-specific, so we use a type assertion.
-func (d *Daemon) collectHostMetrics(ctx context.Context) {
+func (d *Daemon) collectHostMetrics(ctx context.Context, allContainers, autoContainers []domain.Container, containersLoaded bool) {
+	type hostMetricsSnapshotProvider interface {
+		HostMetricsFromContainers(cachePool string, containers []domain.Container) (domain.HostMetrics, error)
+	}
 	type hostMetricsProvider interface {
 		HostMetrics(cachePool string) (domain.HostMetrics, error)
 	}
 
-	if hmp, ok := d.runtime.(hostMetricsProvider); ok {
-		hm, err := hmp.HostMetrics(d.cfg.CachePool)
+	var (
+		hm  domain.HostMetrics
+		err error
+		ok  bool
+	)
+
+	if hmp, snapshotOK := d.runtime.(hostMetricsSnapshotProvider); snapshotOK {
+		hm, err = hmp.HostMetricsFromContainers(d.cfg.CachePool, allContainers)
+		ok = true
+	} else if hmp, hostOK := d.runtime.(hostMetricsProvider); hostOK {
+		hm, err = hmp.HostMetrics(d.cfg.CachePool)
+		ok = true
+	}
+
+	if ok {
 		if err != nil {
 			d.log.Warn("failed to collect host metrics", "error", err)
 			return
 		}
-		containers, err := d.runtime.ListContainers(ctx, d.cfg.Prefix)
-		if err != nil {
-			d.log.Warn("failed to list runner containers for host metrics", "error", err)
-		} else {
+
+		if containersLoaded {
 			running := 0
 			stopped := 0
-			for _, container := range containers {
+			for _, container := range autoContainers {
 				switch container.Status {
 				case domain.StatusRunning:
 					running++
@@ -464,6 +499,20 @@ func (d *Daemon) collectHostMetrics(ctx context.Context) {
 			d.log.Error("failed to push host metrics", "error", err)
 		}
 	}
+}
+
+func (d *Daemon) listWorkflowMetrics(ctx context.Context) ([]domain.WorkflowMetrics, bool, error) {
+	type shallowWorkflowMetricsProvider interface {
+		ListRecentWorkflowRunsShallow(ctx context.Context, perRepo int) ([]domain.WorkflowMetrics, error)
+	}
+
+	if provider, ok := d.ci.(shallowWorkflowMetricsProvider); ok {
+		runs, err := provider.ListRecentWorkflowRunsShallow(ctx, workflowMetricRunFetchLimit)
+		return runs, true, err
+	}
+
+	runs, err := d.ci.ListRecentWorkflowRuns(ctx, workflowMetricRunFetchLimit)
+	return runs, false, err
 }
 
 // buildRunnerMetrics converts runner data into the metrics payload.
@@ -579,6 +628,20 @@ func workflowMetricKey(run domain.WorkflowMetrics) string {
 		run.Conclusion,
 		run.DurationS,
 	)
+}
+
+func filterContainersByPrefix(containers []domain.Container, prefix string) []domain.Container {
+	if len(containers) == 0 {
+		return nil
+	}
+
+	filtered := make([]domain.Container, 0, len(containers))
+	for _, container := range containers {
+		if prefix == "" || len(container.Name) >= len(prefix) && container.Name[:len(prefix)] == prefix {
+			filtered = append(filtered, container)
+		}
+	}
+	return filtered
 }
 
 // unused import guard

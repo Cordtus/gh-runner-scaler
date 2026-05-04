@@ -47,6 +47,14 @@ func (m metricsTestCI) ListRecentWorkflowRuns(_ context.Context, _ int) ([]domai
 	return nil, nil
 }
 
+func (m metricsTestCI) ListRecentWorkflowRunsShallow(_ context.Context, _ int) ([]domain.WorkflowMetrics, error) {
+	return nil, nil
+}
+
+func (m metricsTestCI) EnrichWorkflowMetrics(_ context.Context, runs []domain.WorkflowMetrics) ([]domain.WorkflowMetrics, error) {
+	return append([]domain.WorkflowMetrics(nil), runs...), nil
+}
+
 func TestBuildRunnerMetrics_TracksAvailableOnlineSeparatelyFromIdle(t *testing.T) {
 	runners := []domain.Runner{
 		{ID: 1, Name: "permanent-1", Status: "online", Busy: true},
@@ -99,6 +107,9 @@ type collectMetricsTestCI struct {
 	runnersErr          error
 	workflowRunsBatches [][]domain.WorkflowMetrics
 	workflowCall        int
+	enrichCalls         [][]domain.WorkflowMetrics
+	enrichErr           error
+	enrichFn            func([]domain.WorkflowMetrics) []domain.WorkflowMetrics
 }
 
 func (m *collectMetricsTestCI) ListRunners(_ context.Context) ([]domain.Runner, error) {
@@ -108,7 +119,11 @@ func (m *collectMetricsTestCI) ListRunners(_ context.Context) ([]domain.Runner, 
 	return append([]domain.Runner(nil), m.runners...), nil
 }
 
-func (m *collectMetricsTestCI) ListRecentWorkflowRuns(_ context.Context, _ int) ([]domain.WorkflowMetrics, error) {
+func (m *collectMetricsTestCI) ListRecentWorkflowRuns(ctx context.Context, perRepo int) ([]domain.WorkflowMetrics, error) {
+	return m.ListRecentWorkflowRunsShallow(ctx, perRepo)
+}
+
+func (m *collectMetricsTestCI) ListRecentWorkflowRunsShallow(_ context.Context, _ int) ([]domain.WorkflowMetrics, error) {
 	if len(m.workflowRunsBatches) == 0 {
 		return nil, nil
 	}
@@ -118,6 +133,15 @@ func (m *collectMetricsTestCI) ListRecentWorkflowRuns(_ context.Context, _ int) 
 	}
 	m.workflowCall++
 	return append([]domain.WorkflowMetrics(nil), m.workflowRunsBatches[idx]...), nil
+}
+
+func (m *collectMetricsTestCI) EnrichWorkflowMetrics(_ context.Context, runs []domain.WorkflowMetrics) ([]domain.WorkflowMetrics, error) {
+	batch := append([]domain.WorkflowMetrics(nil), runs...)
+	m.enrichCalls = append(m.enrichCalls, batch)
+	if m.enrichFn != nil {
+		return m.enrichFn(batch), m.enrichErr
+	}
+	return batch, m.enrichErr
 }
 
 type metricsRecorder struct {
@@ -174,6 +198,9 @@ type metricsTestRuntime struct {
 	hostErr     error
 	containers  []domain.Container
 	listErr     error
+	listCalls   int
+	hostCalls   int
+	hostInputs  [][]domain.Container
 }
 
 func (m metricsTestRuntime) CloneFromTemplate(context.Context, string) error {
@@ -200,18 +227,38 @@ func (m metricsTestRuntime) WaitForReady(context.Context, string, []string, time
 	return nil
 }
 
-func (m metricsTestRuntime) ListContainers(context.Context, string) ([]domain.Container, error) {
+func (m *metricsTestRuntime) ListContainers(_ context.Context, prefix string) ([]domain.Container, error) {
+	m.listCalls++
 	if m.listErr != nil {
 		return nil, m.listErr
 	}
-	return append([]domain.Container(nil), m.containers...), nil
+	if prefix == "" {
+		return append([]domain.Container(nil), m.containers...), nil
+	}
+	filtered := make([]domain.Container, 0, len(m.containers))
+	for _, container := range m.containers {
+		if len(container.Name) >= len(prefix) && container.Name[:len(prefix)] == prefix {
+			filtered = append(filtered, container)
+		}
+	}
+	return filtered, nil
 }
 
-func (m metricsTestRuntime) GetContainerStatus(context.Context, string) (domain.ContainerStatus, error) {
+func (m *metricsTestRuntime) GetContainerStatus(context.Context, string) (domain.ContainerStatus, error) {
 	return domain.StatusUnknown, nil
 }
 
-func (m metricsTestRuntime) HostMetrics(string) (domain.HostMetrics, error) {
+func (m *metricsTestRuntime) HostMetrics(_ string) (domain.HostMetrics, error) {
+	return m.hostMetricsFor(nil)
+}
+
+func (m *metricsTestRuntime) HostMetricsFromContainers(_ string, containers []domain.Container) (domain.HostMetrics, error) {
+	return m.hostMetricsFor(containers)
+}
+
+func (m *metricsTestRuntime) hostMetricsFor(containers []domain.Container) (domain.HostMetrics, error) {
+	m.hostCalls++
+	m.hostInputs = append(m.hostInputs, append([]domain.Container(nil), containers...))
 	if m.hostErr != nil {
 		return domain.HostMetrics{}, m.hostErr
 	}
@@ -352,7 +399,7 @@ func TestCollectAndPush_ContinuesWorkflowAndHostMetricsWhenRunnerListFails(t *te
 		},
 	}
 	backend := &metricsRecorder{}
-	runtime := metricsTestRuntime{
+	runtime := &metricsTestRuntime{
 		hostMetrics: domain.HostMetrics{
 			ContainersRunning: 3,
 			ContainersStopped: 12,
@@ -405,7 +452,7 @@ func TestCollectAndPush_OmitsRunnerContainerSamplesWhenContainerListFails(t *tes
 		metricsTestCI: metricsTestCI{prefix: "auto"},
 	}
 	backend := &metricsRecorder{}
-	runtime := metricsTestRuntime{
+	runtime := &metricsTestRuntime{
 		hostMetrics: domain.HostMetrics{
 			ContainersRunning: 4,
 			ContainersStopped: 9,
@@ -435,6 +482,139 @@ func TestCollectAndPush_OmitsRunnerContainerSamplesWhenContainerListFails(t *tes
 	}
 	if backend.hostBatches[0].RunnerContainersStopped != nil {
 		t.Fatalf("runner containers stopped = %v, want nil", *backend.hostBatches[0].RunnerContainersStopped)
+	}
+}
+
+func TestCollectAndPush_ReusesContainerSnapshotAcrossRunnerAndHostMetrics(t *testing.T) {
+	ci := &collectMetricsTestCI{
+		metricsTestCI: metricsTestCI{prefix: "auto"},
+		runners: []domain.Runner{
+			{ID: 1, Name: "auto-1", Status: "online", Busy: false},
+		},
+	}
+	backend := &metricsRecorder{}
+	runtime := &metricsTestRuntime{
+		hostMetrics: domain.HostMetrics{
+			ContainersRunning: 2,
+			ContainersStopped: 5,
+		},
+		containers: []domain.Container{
+			{Name: "auto-1", Status: domain.StatusRunning},
+			{Name: "auto-2", Status: domain.StatusStopped},
+			{Name: "auto-3", Status: domain.StatusRunning},
+			{Name: "permanent", Status: domain.StatusRunning},
+		},
+	}
+
+	daemon := New(
+		Config{Prefix: "auto", CollectHost: true},
+		nil,
+		ci,
+		backend,
+		runtime,
+		nil,
+		testLogger(),
+	)
+
+	daemon.collectAndPush(context.Background())
+
+	if runtime.listCalls != 1 {
+		t.Fatalf("ListContainers calls = %d, want 1", runtime.listCalls)
+	}
+	if runtime.hostCalls != 1 {
+		t.Fatalf("HostMetrics calls = %d, want 1", runtime.hostCalls)
+	}
+	if len(runtime.hostInputs) != 1 || len(runtime.hostInputs[0]) != 4 {
+		t.Fatalf("HostMetrics input = %+v, want all 4 containers", runtime.hostInputs)
+	}
+	if len(backend.runnerBatches) != 1 {
+		t.Fatalf("runner batch count = %d, want 1", len(backend.runnerBatches))
+	}
+	if got := backend.runnerBatches[0].ProvisioningRunners; got != 1 {
+		t.Fatalf("ProvisioningRunners = %d, want 1", got)
+	}
+	if len(backend.hostBatches) != 1 {
+		t.Fatalf("host batch count = %d, want 1", len(backend.hostBatches))
+	}
+	if got := *backend.hostBatches[0].RunnerContainersRunning; got != 2 {
+		t.Fatalf("runner containers running = %d, want 2", got)
+	}
+	if got := *backend.hostBatches[0].RunnerContainersStopped; got != 1 {
+		t.Fatalf("runner containers stopped = %d, want 1", got)
+	}
+}
+
+func TestCollectAndPush_EnrichesOnlyFreshWorkflowRuns(t *testing.T) {
+	runA := domain.WorkflowMetrics{
+		RunID:       101,
+		RunAttempt:  1,
+		Repo:        "repo-a",
+		Workflow:    "build",
+		Conclusion:  "failure",
+		DurationS:   90,
+		RunNumber:   7,
+		Event:       "push",
+		Branch:      "main",
+		CompletedAt: "2026-05-04T12:01:00Z",
+	}
+	runB := domain.WorkflowMetrics{
+		RunID:       102,
+		RunAttempt:  1,
+		Repo:        "repo-a",
+		Workflow:    "lint",
+		Conclusion:  "failure",
+		DurationS:   45,
+		RunNumber:   8,
+		Event:       "push",
+		Branch:      "main",
+		CompletedAt: "2026-05-04T12:03:00Z",
+	}
+
+	ci := &collectMetricsTestCI{
+		metricsTestCI: metricsTestCI{prefix: "auto"},
+		workflowRunsBatches: [][]domain.WorkflowMetrics{
+			{runA},
+			{runA, runB},
+		},
+		enrichFn: func(runs []domain.WorkflowMetrics) []domain.WorkflowMetrics {
+			enriched := append([]domain.WorkflowMetrics(nil), runs...)
+			for i := range enriched {
+				enriched[i].FailureReason = "hydrated"
+			}
+			return enriched
+		},
+	}
+	backend := &metricsRecorder{}
+	daemon := New(
+		Config{CollectWorkflows: true},
+		nil,
+		ci,
+		backend,
+		nil,
+		nil,
+		testLogger(),
+	)
+
+	daemon.collectAndPush(context.Background())
+	daemon.collectAndPush(context.Background())
+
+	if len(ci.enrichCalls) != 2 {
+		t.Fatalf("enrich call count = %d, want 2", len(ci.enrichCalls))
+	}
+	if len(ci.enrichCalls[0]) != 1 || ci.enrichCalls[0][0].RunID != 101 {
+		t.Fatalf("first enrich batch = %+v, want [101]", ci.enrichCalls[0])
+	}
+	if len(ci.enrichCalls[1]) != 1 || ci.enrichCalls[1][0].RunID != 102 {
+		t.Fatalf("second enrich batch = %+v, want [102]", ci.enrichCalls[1])
+	}
+	if len(backend.workflowBatches) != 2 {
+		t.Fatalf("workflow batch count = %d, want 2", len(backend.workflowBatches))
+	}
+	if got := backend.workflowBatches[0][0].FailureReason; got != "hydrated" {
+		t.Fatalf("first workflow failure reason = %q, want hydrated", got)
+	}
+	if got := backend.workflowBatches[1][0].FailureReason; got != "hydrated" {
+		t.Fatalf("second workflow failure reason = %q, want hydrated", got)
 	}
 }
 

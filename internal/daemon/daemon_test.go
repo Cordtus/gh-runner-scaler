@@ -88,6 +88,9 @@ func (d daemonTestCI) ParseWebhookEvent(string, []byte) (*domain.WebhookEvent, e
 func (d daemonTestCI) ListRecentWorkflowRuns(context.Context, int) ([]domain.WorkflowMetrics, error) {
 	return nil, nil
 }
+func (d daemonTestCI) EnrichWorkflowMetrics(_ context.Context, runs []domain.WorkflowMetrics) ([]domain.WorkflowMetrics, error) {
+	return append([]domain.WorkflowMetrics(nil), runs...), nil
+}
 
 type blockingCI struct {
 	calls        atomic.Int32
@@ -123,6 +126,9 @@ func (b *blockingCI) ParseWebhookEvent(string, []byte) (*domain.WebhookEvent, er
 func (b *blockingCI) ListRecentWorkflowRuns(context.Context, int) ([]domain.WorkflowMetrics, error) {
 	return nil, nil
 }
+func (b *blockingCI) EnrichWorkflowMetrics(_ context.Context, runs []domain.WorkflowMetrics) ([]domain.WorkflowMetrics, error) {
+	return append([]domain.WorkflowMetrics(nil), runs...), nil
+}
 
 type failingCI struct{}
 
@@ -140,6 +146,9 @@ func (failingCI) ParseWebhookEvent(string, []byte) (*domain.WebhookEvent, error)
 }
 func (failingCI) ListRecentWorkflowRuns(context.Context, int) ([]domain.WorkflowMetrics, error) {
 	return nil, nil
+}
+func (failingCI) EnrichWorkflowMetrics(_ context.Context, runs []domain.WorkflowMetrics) ([]domain.WorkflowMetrics, error) {
+	return append([]domain.WorkflowMetrics(nil), runs...), nil
 }
 
 func newTestDaemon(t *testing.T, ci any) *Daemon {
@@ -162,6 +171,7 @@ func newTestDaemonWithRuntime(t *testing.T, ci any, runtime iface.ContainerRunti
 		ValidateWebhookPayload([]byte, string) error
 		ParseWebhookEvent(string, []byte) (*domain.WebhookEvent, error)
 		ListRecentWorkflowRuns(context.Context, int) ([]domain.WorkflowMetrics, error)
+		EnrichWorkflowMetrics(context.Context, []domain.WorkflowMetrics) ([]domain.WorkflowMetrics, error)
 	}
 
 	switch v := ci.(type) {
@@ -550,7 +560,7 @@ func TestHandlePushEvent_CollapsesSameRepoBurst(t *testing.T) {
 	d.handlePushEvent(event)
 
 	waitForCondition(t, func() bool {
-		return runtime.execCalls.Load() == 3
+		return runtime.execCalls.Load() == 1
 	})
 }
 
