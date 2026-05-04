@@ -120,6 +120,7 @@ func parseWorkflowJob(payload []byte) (*domain.WebhookEvent, error) {
 		Commit:     commit,
 		Workflow:   job.GetWorkflowName(),
 		Job:        job.GetName(),
+		JobID:      job.GetID(),
 		Runner:     job.GetRunnerName(),
 		Status:     job.GetStatus(),
 		Conclusion: job.GetConclusion(),

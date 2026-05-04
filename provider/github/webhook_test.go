@@ -7,6 +7,7 @@ func TestParseWorkflowJob_TracksRunnerWorkflowAndCommit(t *testing.T) {
 		"action":"completed",
 		"repository":{"full_name":"Acme/repo"},
 		"workflow_job":{
+			"id":991,
 			"name":"integration",
 			"workflow_name":"CI",
 			"head_branch":"main",
@@ -37,6 +38,9 @@ func TestParseWorkflowJob_TracksRunnerWorkflowAndCommit(t *testing.T) {
 	}
 	if event.Job != "integration" {
 		t.Fatalf("expected job integration, got %q", event.Job)
+	}
+	if event.JobID != 991 {
+		t.Fatalf("expected job id 991, got %d", event.JobID)
 	}
 	if event.Runner != "gh-runner-auto-3" {
 		t.Fatalf("expected runner gh-runner-auto-3, got %q", event.Runner)

@@ -18,4 +18,10 @@ type MetricsBackend interface {
 
 	// PushHostMetrics pushes container count and storage pool state.
 	PushHostMetrics(ctx context.Context, m domain.HostMetrics) error
+
+	// PushIssueEvents pushes warning/error events for dashboarding.
+	PushIssueEvents(ctx context.Context, m []domain.IssueEvent) error
+
+	// PushLifecycleMetrics pushes aggregated autoscaling analytics.
+	PushLifecycleMetrics(ctx context.Context, m domain.LifecycleMetrics) error
 }

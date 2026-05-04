@@ -53,8 +53,12 @@ func TestBuildRunnerMetrics_TracksAvailableOnlineSeparatelyFromIdle(t *testing.T
 		{ID: 2, Name: "auto-1", Status: "online", Busy: false},
 		{ID: 3, Name: "auto-2", Status: "offline", Busy: false},
 	}
+	containers := []domain.Container{
+		{Name: "auto-1", Status: domain.StatusRunning},
+		{Name: "auto-2", Status: domain.StatusRunning},
+	}
 
-	metrics := buildRunnerMetrics(runners, metricsTestCI{prefix: "auto"})
+	metrics := buildRunnerMetrics(runners, containers, metricsTestCI{prefix: "auto"})
 
 	if metrics.TotalRunners != 3 {
 		t.Fatalf("TotalRunners = %d, want 3", metrics.TotalRunners)
@@ -79,6 +83,9 @@ func TestBuildRunnerMetrics_TracksAvailableOnlineSeparatelyFromIdle(t *testing.T
 	}
 	if metrics.PermanentRunners != 1 {
 		t.Fatalf("PermanentRunners = %d, want 1", metrics.PermanentRunners)
+	}
+	if metrics.ProvisioningRunners != 1 {
+		t.Fatalf("ProvisioningRunners = %d, want 1", metrics.ProvisioningRunners)
 	}
 	if metrics.UtilizationPct != 50 {
 		t.Fatalf("UtilizationPct = %v, want 50", metrics.UtilizationPct)
@@ -113,11 +120,13 @@ func (m *collectMetricsTestCI) ListRecentWorkflowRuns(_ context.Context, _ int) 
 }
 
 type metricsRecorder struct {
-	runnerBatches   []domain.RunnerMetrics
-	workflowBatches [][]domain.WorkflowMetrics
-	hostBatches     []domain.HostMetrics
-	workflowErrs    []error
-	workflowCalls   int
+	runnerBatches    []domain.RunnerMetrics
+	workflowBatches  [][]domain.WorkflowMetrics
+	hostBatches      []domain.HostMetrics
+	issueBatches     [][]domain.IssueEvent
+	lifecycleBatches []domain.LifecycleMetrics
+	workflowErrs     []error
+	workflowCalls    int
 }
 
 func (m *metricsRecorder) PushRunnerMetrics(_ context.Context, rm domain.RunnerMetrics) error {
@@ -138,6 +147,17 @@ func (m *metricsRecorder) PushWorkflowMetrics(_ context.Context, runs []domain.W
 
 func (m *metricsRecorder) PushHostMetrics(_ context.Context, hm domain.HostMetrics) error {
 	m.hostBatches = append(m.hostBatches, hm)
+	return nil
+}
+
+func (m *metricsRecorder) PushIssueEvents(_ context.Context, issues []domain.IssueEvent) error {
+	batch := append([]domain.IssueEvent(nil), issues...)
+	m.issueBatches = append(m.issueBatches, batch)
+	return nil
+}
+
+func (m *metricsRecorder) PushLifecycleMetrics(_ context.Context, metrics domain.LifecycleMetrics) error {
+	m.lifecycleBatches = append(m.lifecycleBatches, metrics)
 	return nil
 }
 
@@ -449,5 +469,77 @@ func TestCollectAndPush_RetriesWorkflowMetricsAfterPushFailure(t *testing.T) {
 	}
 	if len(backend.workflowBatches[0]) != 1 || backend.workflowBatches[0][0] != run {
 		t.Fatalf("workflow batch = %+v, want [%+v]", backend.workflowBatches[0], run)
+	}
+}
+
+func TestCollectAndPush_PushesLifecycleMetricsAndIssueEventsFromLogStore(t *testing.T) {
+	store, err := NewLogStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLogStore returned error: %v", err)
+	}
+	base := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	entries := []domain.LogEntry{
+		{Time: base, Level: "INFO", Message: "queued", EventType: "workflow_job", Action: "queued", Repo: "Acme/repo", Workflow: "CI", Job: "integration", JobID: 41, RunID: 1001, RunAttempt: 1},
+		{Time: base.Add(20 * time.Second), Level: "INFO", Message: "started", EventType: "workflow_job", Action: "in_progress", Repo: "Acme/repo", Workflow: "CI", Job: "integration", JobID: 41, RunID: 1001, RunAttempt: 1, Runner: "auto-1"},
+		{Time: base.Add(30 * time.Second), Level: "INFO", Message: "scaled up", EventType: "scale_up", Action: "completed", Runner: "auto-1"},
+		{Time: base.Add(90 * time.Second), Level: "INFO", Message: "queued", EventType: "workflow_job", Action: "queued", Repo: "Acme/repo", Workflow: "CI", Job: "deploy", JobID: 42, RunID: 1002, RunAttempt: 1},
+		{Time: base.Add(110 * time.Second), Level: "INFO", Message: "started", EventType: "workflow_job", Action: "in_progress", Repo: "Acme/repo", Workflow: "CI", Job: "deploy", JobID: 42, RunID: 1002, RunAttempt: 1, Runner: "auto-1"},
+		{Time: base.Add(4 * time.Minute), Level: "INFO", Message: "scaling down", EventType: "scale_down", Action: "started", Runner: "auto-1"},
+		{Time: base.Add(9 * time.Minute), Level: "INFO", Message: "scale requested", EventType: "scale_up", Action: "requested", Runner: "auto-2"},
+		{Time: base.Add(10 * time.Minute), Level: "WARN", Message: "failed to collect workflow metrics", Error: "rate limit exceeded", EventType: "workflow_metrics", Action: "failed", Repo: "Acme/repo", Branch: "main"},
+	}
+	for _, entry := range entries {
+		if err := store.Record(entry); err != nil {
+			t.Fatalf("Record returned error: %v", err)
+		}
+	}
+
+	backend := &metricsRecorder{}
+	daemon := New(
+		Config{StateDir: t.TempDir()},
+		nil,
+		metricsTestCI{prefix: "auto"},
+		backend,
+		nil,
+		store,
+		testLogger(),
+	)
+
+	daemon.collectAndPush(context.Background())
+
+	if len(backend.lifecycleBatches) != 1 {
+		t.Fatalf("lifecycle batch count = %d, want 1", len(backend.lifecycleBatches))
+	}
+	lifecycle := backend.lifecycleBatches[0]
+	if lifecycle.QueueWaitSamples != 2 {
+		t.Fatalf("QueueWaitSamples = %d, want 2", lifecycle.QueueWaitSamples)
+	}
+	if lifecycle.AvgQueueWaitS != 20 {
+		t.Fatalf("AvgQueueWaitS = %v, want 20", lifecycle.AvgQueueWaitS)
+	}
+	if lifecycle.LifecycleSamples != 1 {
+		t.Fatalf("LifecycleSamples = %d, want 1", lifecycle.LifecycleSamples)
+	}
+	if lifecycle.AvgJobsPerLifecycle != 1 {
+		t.Fatalf("AvgJobsPerLifecycle = %v, want 1", lifecycle.AvgJobsPerLifecycle)
+	}
+	if lifecycle.ScaleDownToScaleUpSamples != 1 {
+		t.Fatalf("ScaleDownToScaleUpSamples = %d, want 1", lifecycle.ScaleDownToScaleUpSamples)
+	}
+	if lifecycle.AvgScaleDownToScaleUpS != 300 {
+		t.Fatalf("AvgScaleDownToScaleUpS = %v, want 300", lifecycle.AvgScaleDownToScaleUpS)
+	}
+	if len(backend.issueBatches) != 1 {
+		t.Fatalf("issue batch count = %d, want 1", len(backend.issueBatches))
+	}
+	if len(backend.issueBatches[0]) != 1 {
+		t.Fatalf("issue count = %d, want 1", len(backend.issueBatches[0]))
+	}
+	issue := backend.issueBatches[0][0]
+	if issue.Reason != "rate limit exceeded" {
+		t.Fatalf("issue reason = %q, want rate limit exceeded", issue.Reason)
+	}
+	if issue.Repo != "Acme/repo" {
+		t.Fatalf("issue repo = %q, want Acme/repo", issue.Repo)
 	}
 }

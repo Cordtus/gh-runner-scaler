@@ -6,6 +6,7 @@
   "graphTooltip": 1,
   "id": null,
   "links": [],
+  "liveNow": false,
   "panels": [
     {
       "datasource": {
@@ -17,7 +18,6 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -35,11 +35,12 @@
               }
             ]
           }
-        }
+        },
+        "overrides": []
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
+        "w": 3,
         "x": 0,
         "y": 0
       },
@@ -90,12 +91,13 @@
               }
             ]
           }
-        }
+        },
+        "overrides": []
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
-        "x": 4,
+        "w": 3,
+        "x": 3,
         "y": 0
       },
       "id": 24,
@@ -145,12 +147,13 @@
               }
             ]
           }
-        }
+        },
+        "overrides": []
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
-        "x": 8,
+        "w": 3,
+        "x": 6,
         "y": 0
       },
       "id": 2,
@@ -196,16 +199,17 @@
               },
               {
                 "color": "red",
-                "value": 2
+                "value": 3
               }
             ]
           }
-        }
+        },
+        "overrides": []
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
-        "x": 12,
+        "w": 3,
+        "x": 9,
         "y": 0
       },
       "id": 25,
@@ -220,12 +224,12 @@
       },
       "targets": [
         {
-          "expr": "last_over_time({job=\"gh-runner-scaler\", service=\"runner-metrics\"} | json offline_runners | unwrap offline_runners | __error__=\"\" [2m])",
-          "legendFormat": "offline",
+          "expr": "last_over_time({job=\"gh-runner-scaler\", service=\"runner-metrics\"} | json provisioning_runners | unwrap provisioning_runners | __error__=\"\" [2m])",
+          "legendFormat": "provisioning",
           "refId": "A"
         }
       ],
-      "title": "Offline",
+      "title": "Provisioning",
       "type": "stat"
     },
     {
@@ -242,21 +246,27 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "blue",
+                "color": "green",
                 "value": null
               },
               {
-                "color": "purple",
-                "value": 3
+                "color": "yellow",
+                "value": 15
+              },
+              {
+                "color": "red",
+                "value": 60
               }
             ]
-          }
-        }
+          },
+          "unit": "s"
+        },
+        "overrides": []
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
-        "x": 16,
+        "w": 3,
+        "x": 12,
         "y": 0
       },
       "id": 3,
@@ -271,12 +281,12 @@
       },
       "targets": [
         {
-          "expr": "last_over_time({job=\"gh-runner-scaler\", service=\"runner-metrics\"} | json auto_runners | unwrap auto_runners | __error__=\"\" [2m])",
-          "legendFormat": "auto",
+          "expr": "last_over_time({job=\"gh-runner-scaler\", service=\"lifecycle-metrics\"} | json avg_queue_wait_s | unwrap avg_queue_wait_s | __error__=\"\" [5m])",
+          "legendFormat": "avg wait",
           "refId": "A"
         }
       ],
-      "title": "Auto-Scaled",
+      "title": "Avg Queue Wait",
       "type": "stat"
     },
     {
@@ -289,32 +299,30 @@
           "color": {
             "mode": "thresholds"
           },
-          "max": 100,
-          "min": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "text",
+                "color": "red",
                 "value": null
               },
               {
                 "color": "yellow",
-                "value": 50
+                "value": 1
               },
               {
-                "color": "red",
-                "value": 80
+                "color": "green",
+                "value": 2
               }
             ]
-          },
-          "unit": "percent"
-        }
+          }
+        },
+        "overrides": []
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
-        "x": 20,
+        "w": 3,
+        "x": 15,
         "y": 0
       },
       "id": 4,
@@ -329,12 +337,126 @@
       },
       "targets": [
         {
-          "expr": "last_over_time({job=\"gh-runner-scaler\", service=\"runner-metrics\"} | json utilization_pct | unwrap utilization_pct | __error__=\"\" [2m])",
-          "legendFormat": "util",
+          "expr": "last_over_time({job=\"gh-runner-scaler\", service=\"lifecycle-metrics\"} | json avg_jobs_per_lifecycle | unwrap avg_jobs_per_lifecycle | __error__=\"\" [5m])",
+          "legendFormat": "jobs",
           "refId": "A"
         }
       ],
-      "title": "Utilization",
+      "title": "Avg Jobs / Lifecycle",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "grafanacloud-axionic-logs"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 25
+              },
+              {
+                "color": "green",
+                "value": 50
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 18,
+        "y": 0
+      },
+      "id": 32,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "expr": "last_over_time({job=\"gh-runner-scaler\", service=\"lifecycle-metrics\"} | json reused_lifecycle_pct | unwrap reused_lifecycle_pct | __error__=\"\" [5m])",
+          "legendFormat": "reuse",
+          "refId": "A"
+        }
+      ],
+      "title": "Reused Lifecycles %",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "grafanacloud-axionic-logs"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 60
+              },
+              {
+                "color": "green",
+                "value": 300
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 21,
+        "y": 0
+      },
+      "id": 33,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "expr": "last_over_time({job=\"gh-runner-scaler\", service=\"lifecycle-metrics\"} | json avg_scale_down_to_scale_up_s | unwrap avg_scale_down_to_scale_up_s | __error__=\"\" [5m])",
+          "legendFormat": "gap",
+          "refId": "A"
+        }
+      ],
+      "title": "Avg Scale-Down Gap",
       "type": "stat"
     },
     {
@@ -354,7 +476,6 @@
             "fillOpacity": 15,
             "lineInterpolation": "stepAfter",
             "lineWidth": 2,
-            "pointSize": 5,
             "scaleDistribution": {
               "type": "linear"
             },
@@ -366,112 +487,12 @@
             "thresholdsStyle": {
               "mode": "off"
             }
-          },
-          "decimals": 0,
-          "min": 0
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Busy"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "red",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.fillOpacity",
-                "value": 25
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Available Online"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "green",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Offline"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "orange",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Auto-scaled"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "purple",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.fillOpacity",
-                "value": 20
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Total"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "blue",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "dash": [
-                    10,
-                    10
-                  ],
-                  "fill": "dash"
-                }
-              },
-              {
-                "id": "custom.fillOpacity",
-                "value": 0
-              }
-            ]
           }
-        ]
+        },
+        "overrides": []
       },
       "gridPos": {
-        "h": 9,
+        "h": 8,
         "w": 12,
         "x": 0,
         "y": 4
@@ -493,27 +514,27 @@
       "targets": [
         {
           "expr": "last_over_time({job=\"gh-runner-scaler\", service=\"runner-metrics\"} | json busy_runners | unwrap busy_runners | __error__=\"\" [2m])",
-          "legendFormat": "Busy",
+          "legendFormat": "busy",
           "refId": "A"
         },
         {
           "expr": "last_over_time({job=\"gh-runner-scaler\", service=\"runner-metrics\"} | json available_online_runners | unwrap available_online_runners | __error__=\"\" [2m])",
-          "legendFormat": "Available Online",
+          "legendFormat": "available",
           "refId": "B"
         },
         {
-          "expr": "last_over_time({job=\"gh-runner-scaler\", service=\"runner-metrics\"} | json offline_runners | unwrap offline_runners | __error__=\"\" [2m])",
-          "legendFormat": "Offline",
+          "expr": "last_over_time({job=\"gh-runner-scaler\", service=\"runner-metrics\"} | json provisioning_runners | unwrap provisioning_runners | __error__=\"\" [2m])",
+          "legendFormat": "provisioning",
           "refId": "C"
         },
         {
           "expr": "last_over_time({job=\"gh-runner-scaler\", service=\"runner-metrics\"} | json auto_runners | unwrap auto_runners | __error__=\"\" [2m])",
-          "legendFormat": "Auto-scaled",
+          "legendFormat": "auto",
           "refId": "D"
         },
         {
           "expr": "last_over_time({job=\"gh-runner-scaler\", service=\"runner-metrics\"} | json total_runners | unwrap total_runners | __error__=\"\" [2m])",
-          "legendFormat": "Total",
+          "legendFormat": "total",
           "refId": "E"
         }
       ],
@@ -528,47 +549,45 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "continuous-blues"
+            "mode": "palette-classic"
           },
           "custom": {
             "axisBorderShow": false,
-            "axisLabel": "%",
+            "axisLabel": "Seconds",
             "drawStyle": "line",
-            "fillOpacity": 30,
+            "fillOpacity": 25,
             "lineInterpolation": "smooth",
             "lineWidth": 2,
             "scaleDistribution": {
               "type": "linear"
             },
+            "showPoints": "auto",
             "spanNulls": false,
+            "stacking": {
+              "mode": "none"
+            },
             "thresholdsStyle": {
-              "mode": "area"
+              "mode": "off"
             }
-          },
-          "max": 100,
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*"
+            },
+            "properties": [
               {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 50
-              },
-              {
-                "color": "red",
-                "value": 80
+                "id": "unit",
+                "value": "s"
               }
             ]
-          },
-          "unit": "percent"
-        }
+          }
+        ]
       },
       "gridPos": {
-        "h": 9,
+        "h": 8,
         "w": 12,
         "x": 12,
         "y": 4
@@ -576,34 +595,172 @@
       "id": 10,
       "options": {
         "legend": {
-          "displayMode": "list",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
           "placement": "bottom"
         },
         "tooltip": {
-          "mode": "single"
+          "mode": "multi"
         }
       },
       "targets": [
         {
-          "expr": "last_over_time({job=\"gh-runner-scaler\", service=\"runner-metrics\"} | json utilization_pct | unwrap utilization_pct | __error__=\"\" [2m])",
-          "legendFormat": "Utilization",
+          "expr": "last_over_time({job=\"gh-runner-scaler\", service=\"lifecycle-metrics\"} | json avg_queue_wait_s | unwrap avg_queue_wait_s | __error__=\"\" [5m])",
+          "legendFormat": "avg queue wait",
           "refId": "A"
+        },
+        {
+          "expr": "last_over_time({job=\"gh-runner-scaler\", service=\"lifecycle-metrics\"} | json p95_queue_wait_s | unwrap p95_queue_wait_s | __error__=\"\" [5m])",
+          "legendFormat": "p95 queue wait",
+          "refId": "B"
+        },
+        {
+          "expr": "last_over_time({job=\"gh-runner-scaler\", service=\"lifecycle-metrics\"} | json avg_scale_down_to_scale_up_s | unwrap avg_scale_down_to_scale_up_s | __error__=\"\" [5m])",
+          "legendFormat": "avg scale-down gap",
+          "refId": "C"
         }
       ],
-      "title": "Runner Utilization %",
+      "title": "Autoscaling Wait Trend",
       "type": "timeseries"
     },
     {
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 13
+      "datasource": {
+        "type": "loki",
+        "uid": "grafanacloud-axionic-logs"
       },
-      "id": 30,
-      "title": "Workflow Performance",
-      "type": "row"
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 90
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 12
+      },
+      "id": 44,
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Value"
+          }
+        ]
+      },
+      "targets": [
+        {
+          "expr": "topk(20, sum by (repo, branch, workflow, failed_job, failed_step, failure_reason, conclusion) (count_over_time({job=\"gh-runner-scaler\", service=\"workflow-metrics\"} | json | conclusion != \"success\" | conclusion != \"neutral\" | conclusion != \"skipped\" [30d])))",
+          "queryType": "instant",
+          "refId": "A"
+        }
+      ],
+      "title": "Workflow Failure Hotspots (30d)",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "grafanacloud-axionic-logs"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 90
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 12
+      },
+      "id": 45,
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Value"
+          }
+        ]
+      },
+      "targets": [
+        {
+          "expr": "topk(20, sum by (level, reason, event_type, action, repo, branch, workflow, job) (count_over_time({job=\"gh-runner-scaler\", service=\"issue-events\"} | json [30d])))",
+          "queryType": "instant",
+          "refId": "A"
+        }
+      ],
+      "title": "Daemon Issue Counts (30d)",
+      "type": "table"
     },
     {
       "datasource": {
@@ -662,6 +819,10 @@
                       "cancelled": {
                         "color": "orange",
                         "text": "cancelled"
+                      },
+                      "timed_out": {
+                        "color": "red",
+                        "text": "timed_out"
                       }
                     }
                   }
@@ -685,9 +846,9 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 24,
+        "w": 12,
         "x": 0,
-        "y": 14
+        "y": 20
       },
       "id": 11,
       "options": {
@@ -726,9 +887,9 @@
               "traceID": true,
               "traceID (field)": true,
               "detected_level": true,
+              "tsNs": true,
               "run_attempt": true,
-              "run_id": true,
-              "tsNs": true
+              "run_id": true
             },
             "renameByName": {}
           }
@@ -737,16 +898,117 @@
       "type": "table"
     },
     {
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 22
+      "datasource": {
+        "type": "loki",
+        "uid": "grafanacloud-axionic-logs"
       },
-      "id": 31,
-      "title": "Infrastructure",
-      "type": "row"
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "level"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "warn": {
+                        "color": "yellow",
+                        "text": "warn"
+                      },
+                      "error": {
+                        "color": "red",
+                        "text": "error"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 20
+      },
+      "id": 6,
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "observed_at"
+          }
+        ]
+      },
+      "targets": [
+        {
+          "expr": "{job=\"gh-runner-scaler\", service=\"issue-events\"}",
+          "refId": "A"
+        }
+      ],
+      "title": "Recent Daemon Issues",
+      "transformations": [
+        {
+          "id": "extractFields",
+          "options": {
+            "source": "Line"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Line": true,
+              "Time": true,
+              "id": true,
+              "labelTypes": true,
+              "labels": true,
+              "spanID": true,
+              "traceID": true,
+              "traceID (field)": true,
+              "detected_level": true,
+              "tsNs": true
+            },
+            "renameByName": {}
+          }
+        }
+      ],
+      "type": "table"
     },
     {
       "datasource": {
@@ -759,29 +1021,41 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisLabel": "GB",
             "drawStyle": "line",
             "fillOpacity": 20,
+            "lineInterpolation": "linear",
             "lineWidth": 2,
             "scaleDistribution": {
               "type": "linear"
             },
-            "spanNulls": false
-          },
-          "min": 0,
-          "unit": "decgbytes"
-        }
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
       },
       "gridPos": {
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 23
+        "y": 28
       },
       "id": 22,
       "options": {
         "legend": {
-          "displayMode": "list",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
           "placement": "bottom"
         },
         "tooltip": {
@@ -791,12 +1065,12 @@
       "targets": [
         {
           "expr": "last_over_time({job=\"gh-runner-scaler\", service=\"host-metrics\"} | json cache_pool_used_gb | unwrap cache_pool_used_gb | __error__=\"\" [2m])",
-          "legendFormat": "Used",
+          "legendFormat": "used",
           "refId": "A"
         },
         {
           "expr": "last_over_time({job=\"gh-runner-scaler\", service=\"host-metrics\"} | json cache_pool_total_gb | unwrap cache_pool_total_gb | __error__=\"\" [2m])",
-          "legendFormat": "Total",
+          "legendFormat": "total",
           "refId": "B"
         }
       ],
@@ -814,60 +1088,41 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisLabel": "Containers",
             "drawStyle": "bars",
             "fillOpacity": 50,
-            "lineWidth": 1,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
             "scaleDistribution": {
               "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
             }
-          },
-          "decimals": 0,
-          "min": 0
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Running"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "green",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Stopped"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "semi-dark-red",
-                  "mode": "fixed"
-                }
-              }
-            ]
           }
-        ]
+        },
+        "overrides": []
       },
       "gridPos": {
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 23
+        "y": 28
       },
       "id": 23,
       "options": {
         "legend": {
-          "displayMode": "list",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
           "placement": "bottom"
         },
         "tooltip": {
@@ -877,65 +1132,24 @@
       "targets": [
         {
           "expr": "last_over_time({job=\"gh-runner-scaler\", service=\"host-metrics\"} | json runner_containers_running | unwrap runner_containers_running | __error__=\"\" [2m])",
-          "legendFormat": "Running",
+          "legendFormat": "running",
           "refId": "A"
         },
         {
           "expr": "last_over_time({job=\"gh-runner-scaler\", service=\"host-metrics\"} | json runner_containers_stopped | unwrap runner_containers_stopped | __error__=\"\" [2m])",
-          "legendFormat": "Stopped",
+          "legendFormat": "stopped",
           "refId": "B"
         }
       ],
       "title": "Managed Runner Containers",
       "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "loki",
-        "uid": "grafanacloud-axionic-logs"
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 24,
-        "x": 0,
-        "y": 30
-      },
-      "id": 6,
-      "options": {
-        "dedupStrategy": "none",
-        "enableLogDetails": true,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": false
-      },
-      "targets": [
-        {
-          "expr": "{job=\"gh-runner-scaler\", service=\"runner-metrics\"} | json | line_format \"total={{.total_runners}} available={{.available_online_runners}} busy={{.busy_runners}} offline={{.offline_runners}} auto={{.auto_runners}} util={{.utilization_pct}}%\"",
-          "refId": "A"
-        }
-      ],
-      "title": "Runner Metrics Log",
-      "type": "logs"
     }
   ],
-  "refresh": "30s",
-  "schemaVersion": 39,
-  "tags": [
-    "github",
-    "runners",
-    "ci",
-    "lxc"
-  ],
-  "templating": {
-    "list": []
-  },
+  "refresh": "1m",
   "time": {
     "from": "now-6h",
     "to": "now"
   },
   "timepicker": {},
-  "timezone": "browser",
-  "title": "GitHub Actions Runner Scaler",
-  "uid": "gh-runner-scaler",
-  "version": 0
+  "title": "GitHub Runner Scaler"
 }

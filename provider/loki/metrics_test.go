@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/Cordtus/gh-runner-scaler/internal/domain"
 )
@@ -95,5 +97,42 @@ func TestPushHostMetrics_OmitsManagedRunnerFieldsWhenUnavailable(t *testing.T) {
 	}
 	if _, ok := decoded["runner_containers_stopped"]; ok {
 		t.Fatal("runner_containers_stopped present, want omitted")
+	}
+}
+
+func TestPushIssueEvents_UsesObservedTimestamp(t *testing.T) {
+	var captured lokiPayload
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	backend := New(server.URL, "user", "key", "Axionic-Labs")
+	observedAt := "2026-05-04T12:34:56Z"
+	issues := []domain.IssueEvent{{
+		Level:      "warn",
+		Kind:       "daemon",
+		Reason:     "rate limit exceeded",
+		Message:    "failed to collect workflow metrics",
+		ObservedAt: observedAt,
+	}}
+
+	if err := backend.PushIssueEvents(context.Background(), issues); err != nil {
+		t.Fatalf("PushIssueEvents returned error: %v", err)
+	}
+
+	if len(captured.Streams) != 1 || len(captured.Streams[0].Values) != 1 {
+		t.Fatalf("unexpected captured payload: %+v", captured)
+	}
+	gotNS, err := strconv.ParseInt(captured.Streams[0].Values[0][0], 10, 64)
+	if err != nil {
+		t.Fatalf("parse timestamp: %v", err)
+	}
+	wantTime, _ := time.Parse(time.RFC3339, observedAt)
+	if gotNS != wantTime.UnixNano() {
+		t.Fatalf("timestamp = %d, want %d", gotNS, wantTime.UnixNano())
 	}
 }

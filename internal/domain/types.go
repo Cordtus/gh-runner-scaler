@@ -74,6 +74,7 @@ type WebhookEvent struct {
 	Commit        string
 	Workflow      string
 	Job           string
+	JobID         int64
 	Runner        string
 	Status        string
 	Conclusion    string
@@ -101,22 +102,63 @@ type RunnerMetrics struct {
 	OfflineRunners         int            `json:"offline_runners"`
 	AutoRunners            int            `json:"auto_runners"`
 	PermanentRunners       int            `json:"permanent_runners"`
+	ProvisioningRunners    int            `json:"provisioning_runners"`
 	UtilizationPct         float64        `json:"utilization_pct"`
 	Runners                []RunnerDetail `json:"runners"`
 }
 
 // WorkflowMetrics captures a single completed workflow run.
 type WorkflowMetrics struct {
-	RunID       int64  `json:"run_id,omitempty"`
-	RunAttempt  int    `json:"run_attempt,omitempty"`
-	Repo        string `json:"repo"`
-	Workflow    string `json:"workflow"`
-	Conclusion  string `json:"conclusion"`
-	DurationS   int    `json:"duration_s"`
-	RunNumber   int    `json:"run_number"`
-	Event       string `json:"event"`
-	Branch      string `json:"branch"`
-	CompletedAt string `json:"completed_at,omitempty"`
+	RunID         int64  `json:"run_id,omitempty"`
+	RunAttempt    int    `json:"run_attempt,omitempty"`
+	Repo          string `json:"repo"`
+	Workflow      string `json:"workflow"`
+	Conclusion    string `json:"conclusion"`
+	DurationS     int    `json:"duration_s"`
+	RunNumber     int    `json:"run_number"`
+	Event         string `json:"event"`
+	Branch        string `json:"branch"`
+	CompletedAt   string `json:"completed_at,omitempty"`
+	FailedJob     string `json:"failed_job,omitempty"`
+	FailedStep    string `json:"failed_step,omitempty"`
+	FailureReason string `json:"failure_reason,omitempty"`
+}
+
+// IssueEvent captures a single warning/error-worthy daemon event for observability.
+type IssueEvent struct {
+	Level      string `json:"level"`
+	Kind       string `json:"kind"`
+	Reason     string `json:"reason"`
+	Message    string `json:"message,omitempty"`
+	Error      string `json:"error,omitempty"`
+	Detail     string `json:"detail,omitempty"`
+	EventType  string `json:"event_type,omitempty"`
+	Action     string `json:"action,omitempty"`
+	Repo       string `json:"repo,omitempty"`
+	Branch     string `json:"branch,omitempty"`
+	Workflow   string `json:"workflow,omitempty"`
+	Job        string `json:"job,omitempty"`
+	JobID      int64  `json:"job_id,omitempty"`
+	Runner     string `json:"runner,omitempty"`
+	Container  string `json:"container,omitempty"`
+	RunID      int64  `json:"run_id,omitempty"`
+	RunAttempt int    `json:"run_attempt,omitempty"`
+	Conclusion string `json:"conclusion,omitempty"`
+	ObservedAt string `json:"observed_at,omitempty"`
+}
+
+// LifecycleMetrics summarizes autoscaling behavior over the retained event history.
+type LifecycleMetrics struct {
+	WindowStart               string  `json:"window_start,omitempty"`
+	WindowEnd                 string  `json:"window_end,omitempty"`
+	QueueWaitSamples          int     `json:"queue_wait_samples"`
+	AvgQueueWaitS             float64 `json:"avg_queue_wait_s"`
+	P95QueueWaitS             float64 `json:"p95_queue_wait_s"`
+	LifecycleSamples          int     `json:"lifecycle_samples"`
+	AvgJobsPerLifecycle       float64 `json:"avg_jobs_per_lifecycle"`
+	ReusedLifecyclePct        float64 `json:"reused_lifecycle_pct"`
+	ScaleDownToScaleUpSamples int     `json:"scale_down_to_scale_up_samples"`
+	AvgScaleDownToScaleUpS    float64 `json:"avg_scale_down_to_scale_up_s"`
 }
 
 // HostMetrics captures container and storage pool state.
@@ -147,6 +189,7 @@ type LogEntry struct {
 	Repo       string            `json:"repo,omitempty"`
 	Workflow   string            `json:"workflow,omitempty"`
 	Job        string            `json:"job,omitempty"`
+	JobID      int64             `json:"job_id,omitempty"`
 	Runner     string            `json:"runner,omitempty"`
 	Container  string            `json:"container,omitempty"`
 	Commit     string            `json:"commit,omitempty"`

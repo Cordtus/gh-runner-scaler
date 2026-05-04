@@ -26,6 +26,7 @@ func TestLogStoreHandler_PersistsStructuredFields(t *testing.T) {
 		"repo", "Acme/repo",
 		"workflow", "CI",
 		"job", "integration",
+		"job_id", int64(991),
 		"runner", "gh-runner-auto-2",
 		"commit", "0123456789abcdef",
 		"run_id", int64(42),
@@ -45,6 +46,9 @@ func TestLogStoreHandler_PersistsStructuredFields(t *testing.T) {
 	}
 	if entry.Job != "integration" {
 		t.Fatalf("job = %q, want integration", entry.Job)
+	}
+	if entry.JobID != 991 {
+		t.Fatalf("job id = %d, want 991", entry.JobID)
 	}
 	if entry.RunID != 42 {
 		t.Fatalf("run id = %d, want 42", entry.RunID)

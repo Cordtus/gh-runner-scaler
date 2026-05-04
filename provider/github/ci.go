@@ -177,6 +177,13 @@ func (p *Provider) ListRecentWorkflowRuns(ctx context.Context, perRepo int) ([]d
 				Branch:      run.GetHeadBranch(),
 				CompletedAt: completedAt,
 			})
+			if shouldEnrichWorkflowFailure(run.GetConclusion()) {
+				metric := &results[len(results)-1]
+				failedJob, failedStep, failureReason := p.hydrateWorkflowFailureDetails(ctx, repo, run)
+				metric.FailedJob = failedJob
+				metric.FailedStep = failedStep
+				metric.FailureReason = failureReason
+			}
 		}
 	}
 	return results, nil

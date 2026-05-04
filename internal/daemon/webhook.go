@@ -193,6 +193,9 @@ func (d *Daemon) logWebhookEvent(event *domain.WebhookEvent) {
 	if event.Job != "" {
 		args = append(args, "job", event.Job)
 	}
+	if event.JobID != 0 {
+		args = append(args, "job_id", event.JobID)
+	}
 	if event.Runner != "" {
 		args = append(args, "runner", event.Runner)
 	}

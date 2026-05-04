@@ -76,6 +76,33 @@ func (b *Backend) PushHostMetrics(ctx context.Context, m domain.HostMetrics) err
 	return b.push(ctx, labels, m)
 }
 
+// PushIssueEvents pushes warning/error events for dashboarding.
+func (b *Backend) PushIssueEvents(ctx context.Context, m []domain.IssueEvent) error {
+	if len(m) == 0 {
+		return nil
+	}
+	labels := map[string]string{
+		"job":     "gh-runner-scaler",
+		"service": "issue-events",
+		"org":     b.org,
+	}
+	entries := make([]any, 0, len(m))
+	for _, issue := range m {
+		entries = append(entries, issue)
+	}
+	return b.pushEntries(ctx, labels, entries)
+}
+
+// PushLifecycleMetrics pushes aggregate autoscaling behavior snapshots.
+func (b *Backend) PushLifecycleMetrics(ctx context.Context, m domain.LifecycleMetrics) error {
+	labels := map[string]string{
+		"job":     "gh-runner-scaler",
+		"service": "lifecycle-metrics",
+		"org":     b.org,
+	}
+	return b.push(ctx, labels, m)
+}
+
 // lokiPayload matches the Loki push API format.
 type lokiPayload struct {
 	Streams []lokiStream `json:"streams"`
@@ -95,15 +122,18 @@ func (b *Backend) pushEntries(ctx context.Context, labels map[string]string, ent
 		return nil
 	}
 
-	nowNS := time.Now().UnixNano()
 	values := make([][]string, 0, len(entries))
 	for i, entry := range entries {
 		valueJSON, err := json.Marshal(entry)
 		if err != nil {
 			return fmt.Errorf("marshaling metrics: %w", err)
 		}
+		timestamp := entryTimestamp(entry)
+		if timestamp.IsZero() {
+			timestamp = time.Now()
+		}
 		values = append(values, []string{
-			strconv.FormatInt(nowNS+int64(i), 10),
+			strconv.FormatInt(timestamp.UTC().UnixNano()+int64(i), 10),
 			string(valueJSON),
 		})
 	}
@@ -137,4 +167,26 @@ func (b *Backend) pushEntries(ctx context.Context, labels map[string]string, ent
 		return fmt.Errorf("Loki push returned %d", resp.StatusCode)
 	}
 	return nil
+}
+
+func entryTimestamp(entry any) time.Time {
+	switch value := entry.(type) {
+	case domain.WorkflowMetrics:
+		return parseEntryTime(value.CompletedAt)
+	case domain.IssueEvent:
+		return parseEntryTime(value.ObservedAt)
+	default:
+		return time.Time{}
+	}
+}
+
+func parseEntryTime(value string) time.Time {
+	if value == "" {
+		return time.Time{}
+	}
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed
 }

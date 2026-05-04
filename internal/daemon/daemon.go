@@ -47,6 +47,10 @@ type Daemon struct {
 	workflowMu            sync.Mutex
 	workflowDelivered     map[string]struct{}
 	workflowDeliveredKeys []string
+
+	issueMu            sync.Mutex
+	issueDelivered     map[string]struct{}
+	issueDeliveredKeys []string
 }
 
 const (
@@ -77,8 +81,10 @@ func New(
 		log:               log,
 		triggerCh:         make(chan struct{}, 1),
 		workflowDelivered: make(map[string]struct{}),
+		issueDelivered:    make(map[string]struct{}),
 	}
 	d.loadWorkflowMetricCache()
+	d.loadIssueEventCache()
 	return d
 }
 
@@ -193,7 +199,17 @@ func (d *Daemon) collectAndPush(ctx context.Context) {
 	if err != nil {
 		d.log.Error("failed to list runners for metrics", "error", err)
 	} else {
-		rm := buildRunnerMetrics(runners, d.ci)
+		var containers []domain.Container
+		if d.runtime != nil {
+			listed, listErr := d.runtime.ListContainers(ctx, d.cfg.Prefix)
+			if listErr != nil {
+				d.log.Warn("failed to list containers for runner metrics", "error", listErr)
+			} else {
+				containers = listed
+			}
+		}
+
+		rm := buildRunnerMetrics(runners, containers, d.ci)
 		if err := d.metrics.PushRunnerMetrics(ctx, rm); err != nil {
 			d.log.Error("failed to push runner metrics", "error", err)
 		}
@@ -220,6 +236,8 @@ func (d *Daemon) collectAndPush(ctx context.Context) {
 	if d.cfg.CollectHost {
 		d.collectHostMetrics(ctx)
 	}
+
+	d.collectLogDerivedMetrics(ctx)
 }
 
 // collectHostMetrics attempts to gather host-level metrics from the runtime.
@@ -259,13 +277,15 @@ func (d *Daemon) collectHostMetrics(ctx context.Context) {
 }
 
 // buildRunnerMetrics converts runner data into the metrics payload.
-func buildRunnerMetrics(runners []domain.Runner, ci iface.CIProvider) domain.RunnerMetrics {
+func buildRunnerMetrics(runners []domain.Runner, containers []domain.Container, ci iface.CIProvider) domain.RunnerMetrics {
 	m := domain.RunnerMetrics{
 		TotalRunners: len(runners),
 	}
 
+	runnerByName := make(map[string]domain.Runner, len(runners))
 	details := make([]domain.RunnerDetail, 0, len(runners))
 	for _, r := range runners {
+		runnerByName[r.Name] = r
 		if r.Busy {
 			m.BusyRunners++
 		}
@@ -287,6 +307,15 @@ func buildRunnerMetrics(runners []domain.Runner, ci iface.CIProvider) domain.Run
 	m.AvailableOnlineRunners = engine.AvailableRunnerCount(runners)
 	m.OfflineRunners = m.TotalRunners - m.OnlineRunners
 	m.PermanentRunners = m.TotalRunners - m.AutoRunners
+	for _, container := range containers {
+		if container.Status != domain.StatusRunning {
+			continue
+		}
+		runner, exists := runnerByName[container.Name]
+		if !exists || runner.Status != "online" {
+			m.ProvisioningRunners++
+		}
+	}
 	if m.OnlineRunners > 0 {
 		m.UtilizationPct = float64(m.BusyRunners) / float64(m.OnlineRunners) * 100
 	}

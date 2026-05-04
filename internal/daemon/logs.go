@@ -148,6 +148,19 @@ func (s *LogStore) Query(query logQuery) []domain.LogEntry {
 	return results
 }
 
+// Snapshot returns a stable copy of all retained log entries in chronological order.
+func (s *LogStore) Snapshot() []domain.LogEntry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if len(s.entries) == 0 {
+		return nil
+	}
+	entries := make([]domain.LogEntry, len(s.entries))
+	copy(entries, s.entries)
+	return entries
+}
+
 func (s *LogStore) persistLocked() error {
 	tmp, err := os.CreateTemp(filepath.Dir(s.path), "daemon-logs-*.tmp")
 	if err != nil {
@@ -290,6 +303,8 @@ func setLogField(entry *domain.LogEntry, key, value string) {
 		entry.Workflow = value
 	case "job":
 		entry.Job = value
+	case "job_id":
+		entry.JobID = parseLogInt(value)
 	case "runner":
 		entry.Runner = value
 	case "container":

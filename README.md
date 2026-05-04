@@ -337,6 +337,11 @@ curl -H "Authorization: Bearer $GH_SCALER_LOG_TOKEN" \
 
 Loki-specific settings under `[metrics.loki]` are set via environment variables.
 
+When metrics are enabled, the daemon also derives two additional observability streams from the retained structured event history in the state dir:
+
+- `lifecycle-metrics`: queue wait, runner reuse, and scale-down-to-next-scale-up analytics
+- `issue-events`: warning/error events from the scaler itself for issue-count panels
+
 #### State: `[state]`
 
 | Key | Default | Description |
@@ -347,7 +352,7 @@ Filesystem-specific: `[state.filesystem]`
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `dir` | `.state` | Directory for per-container timestamp files, workflow metric cache, and persisted `/logs` history |
+| `dir` | `.state` | Directory for per-container timestamp files, workflow/issue delivery caches, and persisted `/logs` history |
 
 For production, use an absolute path like `/var/lib/gh-runner-scaler/state`.
 
@@ -514,10 +519,13 @@ Treat `deploy/grafana-dashboard.json` as the source of truth for the metrics con
 
 Both dashboards require a Loki datasource receiving metrics from the scaler. They show:
 
-- Runner capacity health (total, available online, busy, offline, auto-scaled)
-- Utilization over time
-- Recent completed workflow runs with outcome, duration, branch, and event
-- Managed runner container counts and cache pool usage
+- Runner capacity health, including provisioning runners during scale-up
+- Lifecycle analytics such as queue wait, jobs per runner lifecycle, reuse rate, and scale-down-to-next-scale-up gap
+- Workflow failure hotspots with repo/branch/workflow/job/step context
+- Daemon warning/error counts and recent issue details
+- Recent workflow outcomes plus managed runner container counts and cache pool usage
+
+The dashboards default to `1m` auto-refresh to match the default metrics collection interval. If you change `[metrics].interval`, keep the Grafana refresh interval aligned so panels are not repeatedly redrawn without new samples.
 
 The exported dashboard currently references the Loki datasource UID
 `grafanacloud-axionic-logs`. If your Grafana stack uses a different Loki
