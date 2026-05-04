@@ -100,13 +100,10 @@ func parseWorkflowJob(payload []byte) (*domain.WebhookEvent, error) {
 	if len(shortCommit) > 7 {
 		shortCommit = shortCommit[:7]
 	}
-	detail := fmt.Sprintf(
-		"%s: %s / %s (%s)",
-		event.GetAction(),
-		event.GetRepo().GetFullName(),
-		job.GetName(),
-		shortCommit,
-	)
+	detail := fmt.Sprintf("%s: %s / %s", event.GetAction(), event.GetRepo().GetFullName(), job.GetName())
+	if shortCommit != "" {
+		detail += fmt.Sprintf(" (%s)", shortCommit)
+	}
 	if runner := job.GetRunnerName(); runner != "" {
 		detail += " runner=" + runner
 	}
