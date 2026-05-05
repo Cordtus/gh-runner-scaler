@@ -22,6 +22,7 @@ type mockRuntime struct {
 	listCalls   int
 	statusCalls int
 	cloneHook   func(name string) error
+	execHook    func(cmd []string) error
 	statusErr   map[string]error
 	cloneErr    error
 	execErr     error
@@ -82,6 +83,11 @@ func (m *mockRuntime) ExecCommand(_ context.Context, _ string, cmd []string) (st
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.execCalls = append(m.execCalls, cmd)
+	if m.execHook != nil {
+		if err := m.execHook(cmd); err != nil {
+			return "", err
+		}
+	}
 	return "", m.execErr
 }
 
@@ -457,6 +463,42 @@ func TestReconcile_RefreshesContainerStatusesBeforeScaleUpCapacityDecision(t *te
 	}
 }
 
+func TestReconcile_ReplacesDeletedContainerDespiteBestEffortScaleDownErrors(t *testing.T) {
+	runtime := newMockRuntime()
+	runtime.containers["auto-1"] = domain.StatusStopped
+	runtime.execHook = func(cmd []string) error {
+		if strings.Contains(strings.Join(cmd, " "), "./svc.sh stop") {
+			return errors.New("svc stop failed")
+		}
+		return nil
+	}
+
+	ci := &mockCI{
+		runners:     []domain.Runner{{ID: 1, Name: "auto-1", Busy: false, Status: "offline"}},
+		regToken:    "test-token",
+		removeToken: "remove-token",
+		prefix:      "auto",
+	}
+	state := newMockState()
+	state.states["auto-1"] = time.Now()
+
+	r := newTestReconciler(runtime, ci, state, nil)
+	r.cfg.MaxAutoRunners = 1
+
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if status := runtime.containers["auto-1"]; status != domain.StatusRunning {
+		t.Fatalf("auto-1 status = %v, want running replacement after delete-with-warning", status)
+	}
+	if len(ci.deletedIDs) != 1 || ci.deletedIDs[0] != 1 {
+		t.Fatalf("deleted runner IDs = %v, want [1]", ci.deletedIDs)
+	}
+}
+
 func TestReconcile_DoesNotDeleteStoppedSnapshotWhenLiveRefreshFails(t *testing.T) {
 	runtime := newMockRuntime()
 	runtime.listed = map[string]domain.ContainerStatus{"auto-1": domain.StatusStopped}
@@ -646,9 +688,13 @@ func TestScaleDown_ReturnsCleanupErrors(t *testing.T) {
 
 	r := newTestReconciler(runtime, ci, state, nil)
 
-	err := r.scaleDown(context.Background(), "auto-1", ci.runners, &reconcilePass{removeToken: ci.removeToken, removeTokenFetched: true})
+	result := r.scaleDown(context.Background(), "auto-1", ci.runners, &reconcilePass{removeToken: ci.removeToken, removeTokenFetched: true})
+	err := result.err
 	if err == nil {
 		t.Fatal("expected scaleDown to return cleanup errors")
+	}
+	if result.deleted {
+		t.Fatal("delete-container failure should not mark the scale-down as deleted")
 	}
 	if !strings.Contains(err.Error(), "stop container") {
 		t.Fatalf("expected stop container error in %v", err)

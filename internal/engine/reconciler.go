@@ -41,6 +41,11 @@ type reconcilePass struct {
 	removeTokenFetched bool
 }
 
+type scaleDownResult struct {
+	deleted bool
+	err     error
+}
+
 // NewReconciler creates a Reconciler wired to the given providers.
 func NewReconciler(
 	cfg ReconcilerConfig,
@@ -95,6 +100,16 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 	now := time.Now()
 	pass := &reconcilePass{}
 	removed := make(map[string]bool)
+	handleScaleDown := func(name string) {
+		result := r.scaleDown(ctx, name, runners, pass)
+		if result.deleted {
+			autoCount--
+			removed[name] = true
+		}
+		if result.err != nil {
+			r.log.Warn("scale-down cleanup encountered errors", "container", name, "error", result.err)
+		}
+	}
 	for i, c := range containers {
 		status := c.Status
 		if status == domain.StatusUnknown || (availableOnline > 0 && status == domain.StatusStopped) {
@@ -110,12 +125,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 		case status == domain.StatusStopped:
 			// Ephemeral runner finished its job and stopped.
 			r.log.Info("container stopped (job complete)", "event_type", "scale_down", "action", "eligible", "container", c.Name, "runner", c.Name, "detail", "job complete")
-			if err := r.scaleDown(ctx, c.Name, runners, pass); err != nil {
-				r.log.Warn("scale-down cleanup encountered errors", "container", c.Name, "error", err)
-			} else {
-				autoCount--
-				removed[c.Name] = true
-			}
+			handleScaleDown(c.Name)
 
 		case isRunnerBusy(c.Name, runners):
 			r.state.SetLastActive(ctx, c.Name, now)
@@ -125,12 +135,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 			// This catches containers left behind by crashed scalers,
 			// failed config.sh, or manual intervention.
 			r.log.Info("orphaned container (no registered runner)", "event_type", "scale_down", "action", "eligible", "container", c.Name, "runner", c.Name, "detail", "orphaned container")
-			if err := r.scaleDown(ctx, c.Name, runners, pass); err != nil {
-				r.log.Warn("scale-down cleanup encountered errors", "container", c.Name, "error", err)
-			} else {
-				autoCount--
-				removed[c.Name] = true
-			}
+			handleScaleDown(c.Name)
 
 		default:
 			// Container is running with a registered idle runner.
@@ -145,12 +150,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 				r.log.Info("container idle past timeout",
 					"event_type", "scale_down", "action", "eligible", "container", c.Name, "runner", c.Name, "idle", idleDur.Round(time.Second),
 				)
-				if err := r.scaleDown(ctx, c.Name, runners, pass); err != nil {
-					r.log.Warn("scale-down cleanup encountered errors", "container", c.Name, "error", err)
-				} else {
-					autoCount--
-					removed[c.Name] = true
-				}
+				handleScaleDown(c.Name)
 			}
 		}
 	}
@@ -269,9 +269,10 @@ func (r *Reconciler) cloneWithFreshName(ctx context.Context, existing []domain.C
 }
 
 // scaleDown tears down a container with belt-and-suspenders deregistration.
-func (r *Reconciler) scaleDown(ctx context.Context, name string, runners []domain.Runner, pass *reconcilePass) error {
+func (r *Reconciler) scaleDown(ctx context.Context, name string, runners []domain.Runner, pass *reconcilePass) scaleDownResult {
 	r.log.Info("scaling down", "event_type", "scale_down", "action", "started", "container", name, "runner", name)
 	var errs []error
+	result := scaleDownResult{}
 
 	// Stop runner service (best-effort).
 	if _, err := r.runtime.ExecCommand(ctx, name, []string{"bash", "-c", "cd /home/runner && ./svc.sh stop"}); err != nil {
@@ -307,6 +308,8 @@ func (r *Reconciler) scaleDown(ctx context.Context, name string, runners []domai
 	}
 	if err := r.runtime.DeleteContainer(ctx, name); err != nil {
 		errs = append(errs, fmt.Errorf("delete container: %w", err))
+	} else {
+		result.deleted = true
 	}
 
 	// Clean up state.
@@ -316,10 +319,11 @@ func (r *Reconciler) scaleDown(ctx context.Context, name string, runners []domai
 
 	if len(errs) > 0 {
 		r.log.Warn("scaled down with cleanup errors", "event_type", "scale_down", "action", "failed", "container", name, "runner", name, "error", errors.Join(errs...))
-		return fmt.Errorf("scale-down %s: %w", name, errors.Join(errs...))
+		result.err = fmt.Errorf("scale-down %s: %w", name, errors.Join(errs...))
+		return result
 	}
 	r.log.Info("scaled down", "event_type", "scale_down", "action", "completed", "container", name, "runner", name)
-	return nil
+	return result
 }
 
 // nextName finds the next available container name (e.g. gh-runner-auto-1, -2, ...).
