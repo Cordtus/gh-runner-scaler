@@ -24,6 +24,9 @@ remote = ""                    # empty = local; e.g. "nodev2" for remote host
 enabled = false
 pool = ""                      # ZFS pool name (e.g. "pool9")
 volume = ""                    # ZFS volume name (e.g. "runner-cache")
+# When enabled, the scaler also prepares /cache/buildx and writes
+# RUNNER_BUILDX_CACHE_ROOT=/cache/buildx plus DOCKER_BUILDKIT=1 into
+# /home/runner/.env so workflows can use Docker Buildx local cache exports.
 
 [[cache.symlinks]]
 source = "/cache/npm"

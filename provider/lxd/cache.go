@@ -11,6 +11,8 @@ import (
 	"github.com/Cordtus/gh-runner-scaler/internal/config"
 )
 
+const buildxCacheRoot = "/cache/buildx"
+
 // CacheManager handles persistent cache volume attachment and symlink setup.
 type CacheManager struct {
 	runtime  *Runtime
@@ -58,28 +60,25 @@ func (cm *CacheManager) AttachCache(ctx context.Context, containerName string) e
 // SetupCacheSymlinks creates symlinks inside the container mapping standard
 // tool paths to the cache mount point. The symlink list is driven by config.
 func (cm *CacheManager) SetupCacheSymlinks(ctx context.Context, containerName string) error {
-	if len(cm.symlinks) == 0 {
-		return nil
-	}
-
 	script := cacheSetupScript(cm.symlinks)
 	_, err := cm.runtime.ExecCommand(ctx, containerName, []string{"bash", "-c", script})
 	if err != nil {
 		return fmt.Errorf("setting up cache symlinks in %s: %w", containerName, err)
 	}
 
-	if toolCacheDir := toolCacheDir(cm.symlinks); toolCacheDir != "" {
-		_, err := cm.runtime.ExecCommand(ctx, containerName, []string{"bash", "-c", runnerEnvScript(toolCacheDir)})
-		if err != nil {
-			return fmt.Errorf("configuring runner cache env in %s: %w", containerName, err)
-		}
+	_, err = cm.runtime.ExecCommand(ctx, containerName, []string{"bash", "-c", runnerEnvScript(toolCacheDir(cm.symlinks))})
+	if err != nil {
+		return fmt.Errorf("configuring runner cache env in %s: %w", containerName, err)
 	}
 	return nil
 }
 
 func cacheSetupScript(symlinks []config.SymlinkConfig) string {
-	var lines []string
-	lines = append(lines, "set -eu")
+	lines := []string{
+		"set -eu",
+		fmt.Sprintf("mkdir -p %s", shellQuote(buildxCacheRoot)),
+		fmt.Sprintf("chown runner:runner %s || true", shellQuote(buildxCacheRoot)),
+	}
 	for _, sl := range symlinks {
 		source := shellQuote(sl.Source)
 		target := shellQuote(sl.Target)
@@ -111,16 +110,28 @@ func toolCacheDir(symlinks []config.SymlinkConfig) string {
 }
 
 func runnerEnvScript(toolCache string) string {
-	toolCacheLine := shellQuote("AGENT_TOOLSDIRECTORY=" + toolCache)
-	runnerToolCacheLine := shellQuote("RUNNER_TOOL_CACHE=" + toolCache)
+	envLines := []string{
+		"RUNNER_BUILDX_CACHE_ROOT=" + buildxCacheRoot,
+		"DOCKER_BUILDKIT=1",
+	}
+	if toolCache != "" {
+		envLines = append([]string{
+			"AGENT_TOOLSDIRECTORY=" + toolCache,
+			"RUNNER_TOOL_CACHE=" + toolCache,
+		}, envLines...)
+	}
+	quotedLines := make([]string, 0, len(envLines))
+	for _, line := range envLines {
+		quotedLines = append(quotedLines, shellQuote(line))
+	}
 	return strings.Join([]string{
 		"set -eu",
 		`env_file=/home/runner/.env`,
 		`tmp_file=$(mktemp)`,
 		`if [ -f "$env_file" ]; then`,
-		`  grep -v -E '^(AGENT_TOOLSDIRECTORY|RUNNER_TOOL_CACHE)=' "$env_file" > "$tmp_file" || true`,
+		`  grep -v -E '^(AGENT_TOOLSDIRECTORY|RUNNER_TOOL_CACHE|RUNNER_BUILDX_CACHE_ROOT|DOCKER_BUILDKIT)=' "$env_file" > "$tmp_file" || true`,
 		`fi`,
-		fmt.Sprintf(`printf '%%s\n%%s\n' %s %s >> "$tmp_file"`, toolCacheLine, runnerToolCacheLine),
+		fmt.Sprintf(`printf '%%s\n' %s >> "$tmp_file"`, strings.Join(quotedLines, " ")),
 		`chown runner:runner "$tmp_file"`,
 		`chmod 600 "$tmp_file"`,
 		`mv "$tmp_file" "$env_file"`,

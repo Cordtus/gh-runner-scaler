@@ -276,6 +276,36 @@ On scale-up, the cache setup step now migrates any pre-existing local directory 
 
 If one of the cache targets is `/opt/hostedtoolcache`, the scaler also writes `AGENT_TOOLSDIRECTORY` and `RUNNER_TOOL_CACHE` into `/home/runner/.env` before the runner service is installed. That keeps `actions/setup-*` downloads in the shared tool cache instead of falling back to `RUNNER_DIR/_work/_tool`.
 
+When cache is enabled, the scaler also prepares `/cache/buildx` and writes `RUNNER_BUILDX_CACHE_ROOT=/cache/buildx` plus `DOCKER_BUILDKIT=1` into `/home/runner/.env`. Docker Buildx does not use external cache storage implicitly; workflows must still pass `--cache-from type=local,src=...` and `--cache-to type=local,dest=...`. Use a stable cache path per repo, branch, and image so parallel jobs do not overwrite each other:
+
+```bash
+CACHE_ROOT="${RUNNER_BUILDX_CACHE_ROOT:-/cache/buildx}/${GITHUB_REPOSITORY#*/}"
+CACHE_BRANCH="${GITHUB_REF_NAME//\//-}"
+CACHE_IMAGE="remote-hooks"
+CACHE_DIR="$CACHE_ROOT/$CACHE_BRANCH/$CACHE_IMAGE"
+CACHE_NEXT="$CACHE_DIR-next"
+rm -rf "$CACHE_NEXT"
+
+cache_from=()
+if [ -f "$CACHE_DIR/index.json" ]; then
+  cache_from+=(--cache-from "type=local,src=$CACHE_DIR")
+fi
+if [ "$CACHE_BRANCH" != "main" ] && [ -f "$CACHE_ROOT/main/$CACHE_IMAGE/index.json" ]; then
+  cache_from+=(--cache-from "type=local,src=$CACHE_ROOT/main/$CACHE_IMAGE")
+fi
+
+docker buildx build \
+  "${cache_from[@]}" \
+  --cache-to "type=local,dest=$CACHE_NEXT,mode=max,compression=zstd" \
+  -t "$IMAGE" \
+  .
+
+rm -rf "$CACHE_DIR"
+mv "$CACHE_NEXT" "$CACHE_DIR"
+```
+
+The local Buildx cache backend stores an OCI image layout on disk. Exporting replaces the active `index.json`, but old blobs remain under the cache directory, so the shared cache pool still needs separate age or size cleanup.
+
 #### CI: `[ci]`
 
 | Key | Default | Description |
@@ -444,9 +474,9 @@ level=INFO msg="runner state" total=1 busy=0 idle=1 auto=0 permanent=1
 
 ### Performance follow-ups
 
-The scaler-side cache drift and tool-cache env wiring can be fixed in this repo, but two larger speed wins remain operational follow-up items:
+The scaler-side cache drift, tool-cache env wiring, and Buildx local cache root are handled in this repo, but two larger speed wins remain operational follow-up items:
 
-- Heavy Docker builds should use a persistent warm builder runner or a shared/remote BuildKit cache. Layer cache inside a one-job ephemeral clone is disposable by design.
+- Heavy Docker builds should use `docker buildx build` with the shared local cache under `/cache/buildx`, or a registry/S3 cache when a repo needs cache sharing outside the runner host. Layer cache inside a one-job ephemeral clone is disposable by design unless it is explicitly exported and imported.
 - Expensive common tooling should be prewarmed into the template or the shared tool cache. For this stack that likely includes Cloud SDK, `kubectl`, `gke-gcloud-auth-plugin`, and pinned browser bundles.
 
 ### Quick update on the server
