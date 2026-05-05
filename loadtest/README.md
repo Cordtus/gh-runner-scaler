@@ -111,6 +111,11 @@ git config --global user.email "you@example.com"
 - Scale-up success/failure rate and cleanup behavior.
 - Reuse quality of shared caches for npm, pip, hosted toolcache, and browser
   assets.
+- Reuse quality of Docker Buildx local caches under `/cache/buildx` for
+  Docker-heavy jobs when `[cache].enabled` is true and the runner has gone
+  through scaler cache setup. Workflows must opt in with explicit
+  `--cache-from type=local,src=...` and `--cache-to type=local,dest=...`
+  arguments; the scaler only prepares the shared cache root and runner env.
 - Whether browser workloads deserve a separate base template from general CI.
 - Whether short burst jobs and heavy dependency jobs interfere with each other
   enough to justify different labels or template classes.
@@ -124,6 +129,10 @@ git config --global user.email "you@example.com"
   - `/home/runner/go/pkg/mod`
   - `/home/runner/.pnpm-store`
   - `/home/runner/.cache/pypoetry`
+- Add Buildx cache probes for image-heavy repos. Use a stable path per repo,
+  branch, and image below `/cache/buildx`, import from the branch cache plus
+  the default-branch cache when useful, and export with `mode=max` so
+  intermediate Dockerfile stages can be reused.
 - Split the base runner image if browser-heavy jobs slow down general CI:
   - a lean general-purpose template
   - a browser template with Playwright browsers and extra UI dependencies

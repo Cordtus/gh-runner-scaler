@@ -26,7 +26,8 @@ pool = ""                      # ZFS pool name (e.g. "pool9")
 volume = ""                    # ZFS volume name (e.g. "runner-cache")
 # When enabled, the scaler also prepares /cache/buildx and writes
 # RUNNER_BUILDX_CACHE_ROOT=/cache/buildx plus DOCKER_BUILDKIT=1 into
-# /home/runner/.env so workflows can use Docker Buildx local cache exports.
+# /home/runner/.env so workflows can opt into Docker Buildx local cache
+# exports with explicit --cache-from/--cache-to type=local arguments.
 
 [[cache.symlinks]]
 source = "/cache/npm"

@@ -45,7 +45,7 @@ clone template -> start -> wait for boot (90s max)
 3. Running, registered, busy -- refresh last-active timestamp
 4. Running, registered, idle past `idle_timeout` -- teardown
 
-Deregistration is belt-and-suspenders: `config.sh remove` followed by a GitHub API DELETE.
+Deregistration is belt-and-suspenders: `config.sh remove` followed by a GitHub API DELETE. Cleanup keeps going after best-effort service-stop or deregistration errors. If the container delete succeeds, the reconciler treats that runner as removed for capacity and next-name decisions, so a replacement can still be created even when cleanup logged warnings.
 
 **Webhook** is the primary event driver. `workflow_job.queued` and `workflow_job.completed` events trigger the scaler within 2 seconds (debounced). `push` events to tracked repos trigger cache volume syncs via `lxc exec` on a running container when the push targets that repo's default branch.
 
@@ -284,6 +284,7 @@ CACHE_BRANCH="${GITHUB_REF_NAME//\//-}"
 CACHE_IMAGE="remote-hooks"
 CACHE_DIR="$CACHE_ROOT/$CACHE_BRANCH/$CACHE_IMAGE"
 CACHE_NEXT="$CACHE_DIR-next"
+mkdir -p "$CACHE_ROOT/$CACHE_BRANCH"
 rm -rf "$CACHE_NEXT"
 
 cache_from=()
@@ -304,7 +305,9 @@ rm -rf "$CACHE_DIR"
 mv "$CACHE_NEXT" "$CACHE_DIR"
 ```
 
-The local Buildx cache backend stores an OCI image layout on disk. Exporting replaces the active `index.json`, but old blobs remain under the cache directory, so the shared cache pool still needs separate age or size cleanup.
+Keep the workflow's existing output behavior: add `--load` if later steps need the built image in the local Docker image store, or `--push` if the build step should publish directly. The local Buildx cache backend stores an OCI image layout on disk. Exporting replaces the active `index.json`, but old blobs remain under the cache directory, so the shared cache pool still needs separate age or size cleanup. Standard Docker image cleanup does not prune `/cache/buildx`; remove old branch/image directories or add a host-side retention job when the cache pool grows too large.
+
+The scaler writes these cache env values only when it configures a managed runner before installing the runner service. Existing long-lived runners and already-running containers do not get rewritten retroactively; recycle them or patch `/home/runner/.env` manually if they must use the same tool-cache and Buildx cache paths.
 
 #### CI: `[ci]`
 
@@ -374,6 +377,8 @@ When metrics are enabled, the daemon also derives two additional observability s
 - `lifecycle-metrics`: queue wait, runner reuse, and scale-down-to-next-scale-up analytics
 - `issue-events`: warning/error events from the scaler itself for issue-count panels
 
+Workflow metrics are collected in two phases to control GitHub API use. The provider first lists recent completed workflow runs without job/step detail, filters out runs already delivered to Loki, and only then enriches fresh failed runs with failed job, failed step, and failure reason. The org repository list is cached for 10 minutes, and `workflow_repo_batch_size` rotates through repos across collection intervals. With the default `25`, a large org is scanned in bounded chunks instead of every metrics tick.
+
 #### State: `[state]`
 
 | Key | Default | Description |
@@ -387,6 +392,14 @@ Filesystem-specific: `[state.filesystem]`
 | `dir` | `.state` | Directory for per-container timestamp files, workflow/issue delivery caches, and persisted `/logs` history |
 
 For production, use an absolute path like `/var/lib/gh-runner-scaler/state`.
+
+The daemon state directory contains:
+
+- `daemon_logs.jsonl`: append-first structured log history for `GET /logs`, compacted to the newest 20,000 entries when needed
+- `workflow_metrics_seen.json`: delivered workflow-run keys so Loki is not spammed after restarts
+- `issue_events_seen.json`: delivered warning/error event keys for the same reason
+
+On startup, the log store tolerates a single trailing truncated JSON entry from an interrupted append and compacts the file. Other malformed history is treated as a real state-file error.
 
 ### Secrets (Environment Variables)
 
@@ -498,6 +511,25 @@ sudo test -f /etc/gh-runner-scaler/env
 ```
 
 If `/etc/gh-runner-scaler/config.toml` is missing but the repo checkout has a `config.toml`, the script will install that once. If either file is still missing, the script stops before touching systemd so it does not restart the service into a broken state.
+
+On hosts without Go, build the Linux binary somewhere else and copy it to the host before installing it. The production `nodev2` host currently follows this path:
+
+```bash
+GOOS=linux GOARCH=amd64 go build -o /tmp/gh-runner-scaler ./cmd/scaler
+scp -F /dev/null -o IdentitiesOnly=yes -i /home/cordt/.ssh/id_ed25519 \
+  /tmp/gh-runner-scaler bv@192.168.0.170:/home/bv/gh-runner-scaler-$(git rev-parse --short HEAD)
+ssh -tt -F /dev/null -o IdentitiesOnly=yes -i /home/cordt/.ssh/id_ed25519 bv@192.168.0.170 \
+  'set -e
+   cd /home/bv/repos/gh-runner-scaler
+   git fetch origin
+   git checkout main
+   git pull --ff-only origin main
+   sudo install -m 0755 /home/bv/gh-runner-scaler-$(git rev-parse --short HEAD) /usr/local/bin/gh-runner-scaler
+   sudo systemctl restart gh-runner-scaler.service
+   sudo systemctl --no-pager --full status gh-runner-scaler.service --lines=20'
+```
+
+Use the full commit SHA with an explicit `test "$(git rev-parse HEAD)" = "<sha>"` guard when doing a production deploy by hand.
 
 ### One-shot test
 
