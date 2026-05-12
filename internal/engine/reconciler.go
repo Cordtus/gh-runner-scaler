@@ -22,6 +22,7 @@ type ReconcilerConfig struct {
 	Labels         string
 	RunnerWorkDir  string
 	CacheEnabled   bool
+	CachePrune     domain.CachePrunePolicy
 	ReadyCheck     []string      // command to poll inside container (e.g. ["test", "-f", "/home/runner/config.sh"])
 	ReadyTimeout   time.Duration // max wait for container boot
 }
@@ -212,6 +213,8 @@ func (r *Reconciler) scaleUp(ctx context.Context, existing []domain.Container) e
 	if r.cache != nil && r.cfg.CacheEnabled {
 		if err := r.cache.SetupCacheSymlinks(ctx, name); err != nil {
 			r.log.Warn("cache symlink setup failed", "container", name, "error", err)
+		} else if err := r.cache.PruneCache(ctx, name, r.cfg.CachePrune); err != nil {
+			r.log.Warn("cache prune failed", "container", name, "error", err)
 		}
 	}
 

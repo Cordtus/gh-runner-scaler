@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/canonical/lxd/shared/api"
 
 	"github.com/Cordtus/gh-runner-scaler/internal/config"
+	"github.com/Cordtus/gh-runner-scaler/internal/domain"
 )
 
 const buildxCacheRoot = "/cache/buildx"
@@ -73,6 +75,21 @@ func (cm *CacheManager) SetupCacheSymlinks(ctx context.Context, containerName st
 	return nil
 }
 
+// PruneCache removes stale bounded shared-cache entries from inside a container
+// with the cache volume attached. A stamp file on /cache throttles real cleanup
+// across daemon restarts and concurrent scale-up attempts.
+func (cm *CacheManager) PruneCache(ctx context.Context, containerName string, policy domain.CachePrunePolicy) error {
+	if !policy.Enabled {
+		return nil
+	}
+	script := cachePruneScript(policy)
+	_, err := cm.runtime.ExecCommand(ctx, containerName, []string{"bash", "-c", script})
+	if err != nil {
+		return fmt.Errorf("pruning cache in %s: %w", containerName, err)
+	}
+	return nil
+}
+
 func cacheSetupScript(symlinks []config.SymlinkConfig) string {
 	lines := []string{
 		"set -eu",
@@ -98,6 +115,73 @@ func cacheSetupScript(symlinks []config.SymlinkConfig) string {
 		)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func cachePruneScript(policy domain.CachePrunePolicy) string {
+	paths := policy.Paths
+	if len(paths) == 0 {
+		paths = []string{buildxCacheRoot}
+	}
+	intervalSeconds := seconds(policy.Interval, 24*time.Hour)
+	intervalMinutes := minutes(policy.Interval, 24*time.Hour)
+	maxAgeMinutes := minutes(policy.MaxAge, 14*24*time.Hour)
+	tempMaxAgeMinutes := minutes(policy.TempMaxAge, 6*time.Hour)
+
+	lines := []string{
+		"set -eu",
+		"stamp='/cache/.gh-runner-scaler-prune.stamp'",
+		"lock='/cache/.gh-runner-scaler-prune.lock'",
+		"now=$(date +%s)",
+		"last=0",
+		`if [ -f "$stamp" ]; then last=$(cat "$stamp" 2>/dev/null || echo 0); fi`,
+		`case "$last" in ''|*[!0-9]*) last=0 ;; esac`,
+		fmt.Sprintf(`if [ "$last" -gt 0 ] && [ $((now - last)) -lt %d ]; then exit 0; fi`, intervalSeconds),
+		fmt.Sprintf(`if [ -d "$lock" ]; then find "$lock" -maxdepth 0 -type d -mmin +%d -exec rmdir {} \; 2>/dev/null || true; fi`, intervalMinutes),
+		`if ! mkdir "$lock" 2>/dev/null; then exit 0; fi`,
+		`trap 'rmdir "$lock" 2>/dev/null || true' EXIT`,
+		"now=$(date +%s)",
+		"last=0",
+		`if [ -f "$stamp" ]; then last=$(cat "$stamp" 2>/dev/null || echo 0); fi`,
+		`case "$last" in ''|*[!0-9]*) last=0 ;; esac`,
+		fmt.Sprintf(`if [ "$last" -gt 0 ] && [ $((now - last)) -lt %d ]; then exit 0; fi`, intervalSeconds),
+	}
+	for _, path := range paths {
+		quoted := shellQuote(path)
+		lines = append(lines,
+			fmt.Sprintf("if [ -d %s ]; then", quoted),
+			fmt.Sprintf("  find %s -mindepth 3 -maxdepth 3 -type d -name '*-next' -mmin +%d -prune -exec rm -rf -- {} +", quoted, tempMaxAgeMinutes),
+			fmt.Sprintf("  find %s -mindepth 3 -maxdepth 3 -type d -mmin +%d -prune -exec rm -rf -- {} +", quoted, maxAgeMinutes),
+			fmt.Sprintf("  find %s -mindepth 1 -maxdepth 6 -type d -empty -delete", quoted),
+			"fi",
+		)
+	}
+	lines = append(lines,
+		`printf '%s\n' "$now" > "$stamp"`,
+		`chown runner:runner "$stamp" || true`,
+	)
+	return strings.Join(lines, "\n")
+}
+
+func seconds(value, fallback time.Duration) int {
+	if value <= 0 {
+		value = fallback
+	}
+	result := int(value.Seconds())
+	if result < 1 {
+		return 1
+	}
+	return result
+}
+
+func minutes(value, fallback time.Duration) int {
+	if value <= 0 {
+		value = fallback
+	}
+	result := int(value.Minutes())
+	if result < 1 {
+		return 1
+	}
+	return result
 }
 
 func toolCacheDir(symlinks []config.SymlinkConfig) string {

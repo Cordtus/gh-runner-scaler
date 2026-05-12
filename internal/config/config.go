@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/Cordtus/gh-runner-scaler/internal/domain"
 )
 
 // Config is the top-level configuration structure.
@@ -49,10 +52,20 @@ type LXDConfig struct {
 
 // CacheConfig controls the persistent cache volume.
 type CacheConfig struct {
-	Enabled  bool            `toml:"enabled"`
-	Pool     string          `toml:"pool"`
-	Volume   string          `toml:"volume"`
-	Symlinks []SymlinkConfig `toml:"symlinks"`
+	Enabled  bool             `toml:"enabled"`
+	Pool     string           `toml:"pool"`
+	Volume   string           `toml:"volume"`
+	Prune    CachePruneConfig `toml:"prune"`
+	Symlinks []SymlinkConfig  `toml:"symlinks"`
+}
+
+// CachePruneConfig controls cleanup of bounded shared-cache paths.
+type CachePruneConfig struct {
+	Enabled    bool     `toml:"enabled"`
+	Interval   Duration `toml:"interval"`
+	MaxAge     Duration `toml:"max_age"`
+	TempMaxAge Duration `toml:"temp_max_age"`
+	Paths      []string `toml:"paths"`
 }
 
 // SymlinkConfig maps a cache volume path to a target path inside the container.
@@ -162,6 +175,15 @@ func defaults() *Config {
 			Provider: "lxd",
 			Template: "gh-runner-template",
 		},
+		Cache: CacheConfig{
+			Prune: CachePruneConfig{
+				Enabled:    true,
+				Interval:   Duration{24 * time.Hour},
+				MaxAge:     Duration{14 * 24 * time.Hour},
+				TempMaxAge: Duration{6 * time.Hour},
+				Paths:      []string{"/cache/buildx"},
+			},
+		},
 		CI: CIConfig{
 			Provider: "github",
 		},
@@ -247,6 +269,28 @@ func validate(cfg *Config) error {
 				return fmt.Errorf("cache.symlinks target must be absolute: %s", sl.Target)
 			}
 		}
+		if cfg.Cache.Prune.Enabled {
+			if cfg.Cache.Prune.Interval.Duration <= 0 {
+				return fmt.Errorf("cache.prune.interval must be > 0")
+			}
+			if cfg.Cache.Prune.MaxAge.Duration <= 0 {
+				return fmt.Errorf("cache.prune.max_age must be > 0")
+			}
+			if cfg.Cache.Prune.TempMaxAge.Duration <= 0 {
+				return fmt.Errorf("cache.prune.temp_max_age must be > 0")
+			}
+			for _, path := range cfg.Cache.Prune.Paths {
+				if !filepath.IsAbs(path) {
+					return fmt.Errorf("cache.prune.paths entries must be absolute: %s", path)
+				}
+				if filepath.Clean(path) != path {
+					return fmt.Errorf("cache.prune.paths entries must be clean paths: %s", path)
+				}
+				if !strings.HasPrefix(path, "/cache/") {
+					return fmt.Errorf("cache.prune.paths entries must be specific subdirectories under /cache: %s", path)
+				}
+			}
+		}
 	}
 	if cfg.Webhook.Enabled && cfg.CI.GitHub.WebhookSecret == "" && cfg.CI.Provider == "github" {
 		return fmt.Errorf("GH_WEBHOOK_SECRET env var is required when webhook is enabled")
@@ -279,4 +323,15 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("state.filesystem.dir is required")
 	}
 	return nil
+}
+
+// CachePrunePolicy returns the provider-neutral shared-cache cleanup settings.
+func (cfg *Config) CachePrunePolicy() domain.CachePrunePolicy {
+	return domain.CachePrunePolicy{
+		Enabled:    cfg.Cache.Enabled && cfg.Cache.Prune.Enabled,
+		Interval:   cfg.Cache.Prune.Interval.Duration,
+		MaxAge:     cfg.Cache.Prune.MaxAge.Duration,
+		TempMaxAge: cfg.Cache.Prune.TempMaxAge.Duration,
+		Paths:      append([]string(nil), cfg.Cache.Prune.Paths...),
+	}
 }

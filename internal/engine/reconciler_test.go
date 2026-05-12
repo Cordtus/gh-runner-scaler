@@ -176,6 +176,7 @@ func (m *mockCI) EnrichWorkflowMetrics(_ context.Context, runs []domain.Workflow
 type mockCache struct {
 	attached []string
 	symlinks []string
+	pruned   []domain.CachePrunePolicy
 }
 
 func (m *mockCache) AttachCache(_ context.Context, name string) error {
@@ -185,6 +186,11 @@ func (m *mockCache) AttachCache(_ context.Context, name string) error {
 
 func (m *mockCache) SetupCacheSymlinks(_ context.Context, name string) error {
 	m.symlinks = append(m.symlinks, name)
+	return nil
+}
+
+func (m *mockCache) PruneCache(_ context.Context, _ string, policy domain.CachePrunePolicy) error {
+	m.pruned = append(m.pruned, policy)
 	return nil
 }
 
@@ -253,6 +259,13 @@ func newTestReconciler(runtime *mockRuntime, ci *mockCI, state *mockState, cache
 			Labels:         "self-hosted",
 			RunnerWorkDir:  "_work",
 			CacheEnabled:   cache != nil,
+			CachePrune: domain.CachePrunePolicy{
+				Enabled:    cache != nil,
+				Interval:   24 * time.Hour,
+				MaxAge:     14 * 24 * time.Hour,
+				TempMaxAge: 6 * time.Hour,
+				Paths:      []string{"/cache/buildx"},
+			},
 		},
 		runtime, cache, ci, state, nil,
 	)
@@ -643,6 +656,9 @@ func TestScaleUp_WithCache(t *testing.T) {
 	}
 	if len(cache.symlinks) != 1 || cache.symlinks[0] != "auto-1" {
 		t.Errorf("expected symlinks set up for auto-1, got %v", cache.symlinks)
+	}
+	if len(cache.pruned) != 1 || !cache.pruned[0].Enabled {
+		t.Errorf("expected cache prune policy to run once, got %v", cache.pruned)
 	}
 }
 

@@ -29,6 +29,13 @@ volume = ""                    # ZFS volume name (e.g. "runner-cache")
 # /home/runner/.env so workflows can opt into Docker Buildx local cache
 # exports with explicit --cache-from/--cache-to type=local arguments.
 
+[cache.prune]
+enabled = true
+interval = "24h"               # real cleanup runs at most once per interval
+max_age = "336h"               # remove stale cache dirs after 14 days
+temp_max_age = "6h"            # remove abandoned *-next exports after 6 hours; keep longer than expected builds
+paths = ["/cache/buildx"]      # specific shared-cache roots to prune
+
 [[cache.symlinks]]
 source = "/cache/npm"
 target = "/home/runner/.npm"

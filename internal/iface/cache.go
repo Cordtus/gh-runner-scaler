@@ -1,6 +1,10 @@
 package iface
 
-import "context"
+import (
+	"context"
+
+	"github.com/Cordtus/gh-runner-scaler/internal/domain"
+)
 
 // CacheManager abstracts persistent cache volume operations.
 // Attaching a shared volume and setting up symlinks inside the container
@@ -12,4 +16,7 @@ type CacheManager interface {
 	// SetupCacheSymlinks creates symlinks inside the container mapping
 	// standard tool paths to the cache mount point.
 	SetupCacheSymlinks(ctx context.Context, containerName string) error
+
+	// PruneCache removes stale bounded cache entries when policy allows it.
+	PruneCache(ctx context.Context, containerName string, policy domain.CachePrunePolicy) error
 }

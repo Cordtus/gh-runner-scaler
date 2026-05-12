@@ -79,6 +79,7 @@ func runDaemon(args []string) {
 			Labels:         cfg.Scaler.Labels,
 			RunnerWorkDir:  cfg.Scaler.RunnerWorkDir,
 			CacheEnabled:   cfg.Cache.Enabled,
+			CachePrune:     cfg.CachePrunePolicy(),
 		},
 		runtime, cache, ci, state, log,
 	)
@@ -149,6 +150,7 @@ func runReconcile(args []string) {
 			Labels:         cfg.Scaler.Labels,
 			RunnerWorkDir:  cfg.Scaler.RunnerWorkDir,
 			CacheEnabled:   cfg.Cache.Enabled,
+			CachePrune:     cfg.CachePrunePolicy(),
 		},
 		runtime, cache, ci, state, log,
 	)

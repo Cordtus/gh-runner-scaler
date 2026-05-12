@@ -262,6 +262,16 @@ cp config.example.toml config.toml
 | `pool` | | ZFS storage pool name |
 | `volume` | | ZFS volume name |
 
+Shared-cache pruning is configured under `[cache.prune]`:
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enabled` | `true` | Run opportunistic cleanup when a managed runner starts with cache enabled |
+| `interval` | `24h` | Minimum time between real prune passes, tracked by a stamp file on `/cache` |
+| `max_age` | `336h` | Remove stale cache directories older than this retention window by directory modification time |
+| `temp_max_age` | `6h` | Remove abandoned temporary `*-next` cache exports older than this; keep it longer than expected build duration |
+| `paths` | `["/cache/buildx"]` | Specific shared-cache roots to prune; entries must be subdirectories under `/cache` |
+
 Symlinks are configured via `[[cache.symlinks]]` entries:
 
 ```toml
@@ -305,7 +315,7 @@ rm -rf "$CACHE_DIR"
 mv "$CACHE_NEXT" "$CACHE_DIR"
 ```
 
-Keep the workflow's existing output behavior: add `--load` if later steps need the built image in the local Docker image store, or `--push` if the build step should publish directly. The local Buildx cache backend stores an OCI image layout on disk. Exporting replaces the active `index.json`, but old blobs remain under the cache directory, so the shared cache pool still needs separate age or size cleanup. Standard Docker image cleanup does not prune `/cache/buildx`; remove old branch/image directories or add a host-side retention job when the cache pool grows too large.
+Keep the workflow's existing output behavior: add `--load` if later steps need the built image in the local Docker image store, or `--push` if the build step should publish directly. The local Buildx cache backend stores an OCI image layout on disk. Exporting replaces the active `index.json`, but old blobs remain under the cache directory. Standard Docker image cleanup does not prune `/cache/buildx`; the scaler's shared-cache prune pass removes stale branch/image cache directories and abandoned `*-next` exports from configured `[cache.prune].paths` instead of deleting OCI blob files inside active cache directories.
 
 The scaler writes these cache env values only when it configures a managed runner before installing the runner service. Existing long-lived runners and already-running containers do not get rewritten retroactively; recycle them or patch `/home/runner/.env` manually if they must use the same tool-cache and Buildx cache paths.
 
@@ -378,6 +388,8 @@ When metrics are enabled, the daemon also derives two additional observability s
 - `issue-events`: warning/error events from the scaler itself for issue-count panels
 
 Workflow metrics are collected in two phases to control GitHub API use. The provider first lists recent completed workflow runs without job/step detail, filters out runs already delivered to Loki, and only then enriches fresh failed runs with failed job, failed step, and failure reason. The org repository list is cached for 10 minutes, and `workflow_repo_batch_size` rotates through repos across collection intervals. With the default `25`, a large org is scanned in bounded chunks instead of every metrics tick.
+
+Shared-cache pruning only removes stale directories under configured `/cache/...` paths. It does not prune retained structured event history, workflow metric dedupe state, or issue-event dedupe state in the daemon state directory.
 
 #### State: `[state]`
 
@@ -487,7 +499,7 @@ level=INFO msg="runner state" total=1 busy=0 idle=1 auto=0 permanent=1
 
 ### Performance follow-ups
 
-The scaler-side cache drift, tool-cache env wiring, and Buildx local cache root are handled in this repo, but two larger speed wins remain operational follow-up items:
+The scaler-side cache drift, tool-cache env wiring, Buildx local cache root, and age-based Buildx cache pruning are handled in this repo, but two larger speed wins remain operational follow-up items:
 
 - Heavy Docker builds should use `docker buildx build` with the shared local cache under `/cache/buildx`, or a registry/S3 cache when a repo needs cache sharing outside the runner host. Layer cache inside a one-job ephemeral clone is disposable by design unless it is explicitly exported and imported.
 - Expensive common tooling should be prewarmed into the template or the shared tool cache. For this stack that likely includes Cloud SDK, `kubectl`, `gke-gcloud-auth-plugin`, and pinned browser bundles.

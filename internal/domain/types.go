@@ -4,6 +4,15 @@ package domain
 
 import "time"
 
+// CachePrunePolicy controls opportunistic cleanup of shared cache paths.
+type CachePrunePolicy struct {
+	Enabled    bool
+	Interval   time.Duration
+	MaxAge     time.Duration
+	TempMaxAge time.Duration
+	Paths      []string
+}
+
 // ContainerStatus represents the runtime state of a container.
 type ContainerStatus int
 
