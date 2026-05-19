@@ -754,12 +754,12 @@
       },
       "targets": [
         {
-          "expr": "topk(20, sum by (level, reason, event_type, action, repo, branch, workflow, job) (count_over_time({job=\"gh-runner-scaler\", service=\"issue-events\"} | json [30d])))",
+          "expr": "topk(20, sum by (level, reason, event_type, action, repo, branch, workflow, job) (count_over_time({job=\"gh-runner-scaler\", service=\"issue-events\"} != \"listing runners:\" | json [30d])))",
           "queryType": "instant",
           "refId": "A"
         }
       ],
-      "title": "Daemon Issue Counts (30d)",
+      "title": "Actionable Daemon Issue Counts (30d)",
       "type": "table"
     },
     {
@@ -977,11 +977,124 @@
       },
       "targets": [
         {
-          "expr": "{job=\"gh-runner-scaler\", service=\"issue-events\"}",
+          "expr": "{job=\"gh-runner-scaler\", service=\"issue-events\"} != \"listing runners:\"",
           "refId": "A"
         }
       ],
-      "title": "Recent Daemon Issues",
+      "title": "Recent Actionable Daemon Issues",
+      "transformations": [
+        {
+          "id": "extractFields",
+          "options": {
+            "source": "Line"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Line": true,
+              "Time": true,
+              "id": true,
+              "labelTypes": true,
+              "labels": true,
+              "spanID": true,
+              "traceID": true,
+              "traceID (field)": true,
+              "detected_level": true,
+              "tsNs": true
+            },
+            "renameByName": {}
+          }
+        }
+      ],
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "grafanacloud-axionic-logs"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "level"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "warn": {
+                        "color": "yellow",
+                        "text": "warn"
+                      },
+                      "error": {
+                        "color": "red",
+                        "text": "error"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 28
+      },
+      "id": 46,
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "observed_at"
+          }
+        ]
+      },
+      "targets": [
+        {
+          "expr": "{job=\"gh-runner-scaler\", service=\"issue-events\"} |= \"listing runners:\"",
+          "refId": "A"
+        }
+      ],
+      "title": "Recent GitHub Runner Inventory Errors",
       "transformations": [
         {
           "id": "extractFields",
@@ -1046,7 +1159,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 28
+        "y": 36
       },
       "id": 22,
       "options": {
@@ -1113,7 +1226,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 28
+        "y": 36
       },
       "id": 23,
       "options": {
