@@ -598,7 +598,9 @@ Both dashboards require a Loki datasource receiving metrics from the scaler. The
 - Runner capacity health, including provisioning runners during scale-up
 - Lifecycle analytics such as queue wait, jobs per runner lifecycle, reuse rate, and scale-down-to-next-scale-up gap
 - Workflow failure hotspots with repo/branch/workflow/job/step context
-- Daemon warning/error counts and recent issue details
+- Actionable daemon warning/error counts and recent issue details
+- GitHub runner-inventory API errors split into their own table so transient
+  upstream `listing runners` failures do not hide scaler-owned problems
 - Recent workflow outcomes plus managed runner container counts and cache pool usage
 
 The dashboards default to `1m` auto-refresh to match the default metrics collection interval. If you change `[metrics].interval`, keep the Grafana refresh interval aligned so panels are not repeatedly redrawn without new samples.

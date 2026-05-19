@@ -1087,7 +1087,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "topk(20, sum by (level, reason, event_type, action, repo, branch, workflow, job) (count_over_time({job=\"gh-runner-scaler\", service=\"issue-events\"} | json [30d])))",
+                      "expr": "topk(20, sum by (level, reason, event_type, action, repo, branch, workflow, job) (count_over_time({job=\"gh-runner-scaler\", service=\"issue-events\"} != \"listing runners:\" | json [30d])))",
                       "queryType": "instant"
                     },
                     "version": "v0"
@@ -1103,7 +1103,7 @@
         "description": "",
         "id": 45,
         "links": [],
-        "title": "Daemon Issue Counts (30d)",
+        "title": "Actionable Daemon Issue Counts (30d)",
         "vizConfig": {
           "group": "table",
           "kind": "VizConfig",
@@ -1336,7 +1336,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "{job=\"gh-runner-scaler\", service=\"issue-events\"}",
+                      "expr": "{job=\"gh-runner-scaler\", service=\"issue-events\"} != \"listing runners:\"",
                       "queryType": "range"
                     },
                     "version": "v0"
@@ -1377,7 +1377,7 @@
         "description": "",
         "id": 6,
         "links": [],
-        "title": "Recent Daemon Issues",
+        "title": "Recent Actionable Daemon Issues",
         "vizConfig": {
           "group": "table",
           "kind": "VizConfig",
@@ -1666,6 +1666,142 @@
           "version": "13.1.0-24556818486"
         }
       }
+    },
+    "panel-46": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": {
+                      "name": "grafanacloud-axionic-logs"
+                    },
+                    "group": "loki",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "editorMode": "code",
+                      "expr": "{job=\"gh-runner-scaler\", service=\"issue-events\"} |= \"listing runners:\"",
+                      "queryType": "range"
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": [
+              {
+                "id": "extractFields",
+                "options": {
+                  "source": "Line"
+                }
+              },
+              {
+                "id": "organize",
+                "options": {
+                  "excludeByName": {
+                    "Line": true,
+                    "Time": true,
+                    "id": true,
+                    "labelTypes": true,
+                    "labels": true,
+                    "spanID": true,
+                    "traceID": true,
+                    "traceID (field)": true,
+                    "detected_level": true,
+                    "tsNs": true
+                  },
+                  "renameByName": {}
+                }
+              }
+            ]
+          }
+        },
+        "description": "",
+        "id": 46,
+        "links": [],
+        "title": "Recent GitHub Runner Inventory Errors",
+        "vizConfig": {
+          "group": "table",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "thresholds"
+                },
+                "custom": {
+                  "align": "auto",
+                  "cellOptions": {
+                    "type": "auto"
+                  },
+                  "inspect": false
+                },
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    }
+                  ]
+                }
+              },
+              "overrides": [
+                {
+                  "matcher": {
+                    "id": "byName",
+                    "options": "level"
+                  },
+                  "properties": [
+                    {
+                      "id": "custom.cellOptions",
+                      "value": {
+                        "type": "color-text"
+                      }
+                    },
+                    {
+                      "id": "mappings",
+                      "value": [
+                        {
+                          "type": "value",
+                          "options": {
+                            "warn": {
+                              "color": "yellow",
+                              "text": "warn"
+                            },
+                            "error": {
+                              "color": "red",
+                              "text": "error"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            "options": {
+              "showHeader": true,
+              "sortBy": [
+                {
+                  "desc": true,
+                  "displayName": "observed_at"
+                }
+              ]
+            }
+          },
+          "version": "13.1.0-24556818486"
+        }
+      }
     }
   },
   "layout": {
@@ -1859,12 +1995,25 @@
           "spec": {
             "element": {
               "kind": "ElementReference",
+              "name": "panel-46"
+            },
+            "height": 8,
+            "width": 24,
+            "x": 0,
+            "y": 28
+          }
+        },
+        {
+          "kind": "GridLayoutItem",
+          "spec": {
+            "element": {
+              "kind": "ElementReference",
               "name": "panel-22"
             },
             "height": 7,
             "width": 12,
             "x": 0,
-            "y": 28
+            "y": 36
           }
         },
         {
@@ -1877,7 +2026,7 @@
             "height": 7,
             "width": 12,
             "x": 12,
-            "y": 28
+            "y": 36
           }
         }
       ]
