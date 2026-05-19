@@ -4,6 +4,7 @@ package github
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +14,11 @@ import (
 	"github.com/Cordtus/gh-runner-scaler/internal/domain"
 )
 
+const (
+	defaultRunnerCacheTTL = 30 * time.Second
+	defaultRunnerStaleTTL = 10 * time.Minute
+)
+
 // Provider implements CIProvider for GitHub Actions.
 type Provider struct {
 	client                *gh.Client
@@ -20,6 +26,11 @@ type Provider struct {
 	prefix                string
 	validator             *WebhookValidator
 	mu                    sync.Mutex
+	runnerFetchMu         sync.Mutex
+	runnerCacheTTL        time.Duration
+	runnerStaleTTL        time.Duration
+	runnerCache           []domain.Runner
+	runnerCacheFetchedAt  time.Time
 	workflowRepoBatchSize int
 	repoCacheTTL          time.Duration
 	repoCache             []string
@@ -38,9 +49,31 @@ func newProvider(client *gh.Client, org, prefix string) *Provider {
 		client:                client,
 		org:                   org,
 		prefix:                prefix,
+		runnerCacheTTL:        defaultRunnerCacheTTL,
+		runnerStaleTTL:        defaultRunnerStaleTTL,
 		workflowRepoBatchSize: 25,
 		repoCacheTTL:          10 * time.Minute,
 	}
+}
+
+// SetRunnerCacheTTL bounds how long fresh runner inventory can be reused.
+func (p *Provider) SetRunnerCacheTTL(ttl time.Duration) {
+	if ttl < 0 {
+		ttl = 0
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.runnerCacheTTL = ttl
+}
+
+// SetRunnerStaleTTL bounds how long metrics may reuse stale runner inventory after API failures.
+func (p *Provider) SetRunnerStaleTTL(ttl time.Duration) {
+	if ttl < 0 {
+		ttl = 0
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.runnerStaleTTL = ttl
 }
 
 // SetWorkflowRepoBatchSize bounds workflow metrics collection to a repo subset per interval.
@@ -56,6 +89,51 @@ func (p *Provider) SetWorkflowRepoBatchSize(size int) {
 
 // ListRunners returns all runners registered with the org.
 func (p *Provider) ListRunners(ctx context.Context) ([]domain.Runner, error) {
+	p.runnerFetchMu.Lock()
+	defer p.runnerFetchMu.Unlock()
+
+	runners, err := p.fetchRunners(ctx)
+	if err != nil {
+		return nil, err
+	}
+	p.storeRunnerCache(runners)
+	return append([]domain.Runner(nil), runners...), nil
+}
+
+// ListRunnersForMetrics returns runner inventory with bounded stale fallback for dashboards.
+func (p *Provider) ListRunnersForMetrics(ctx context.Context) ([]domain.Runner, domain.RunnerInventoryMeta, error) {
+	return p.listRunners(ctx, true)
+}
+
+func (p *Provider) listRunners(ctx context.Context, allowStale bool) ([]domain.Runner, domain.RunnerInventoryMeta, error) {
+	if runners, meta, ok := p.cachedRunners(false); ok {
+		return runners, meta, nil
+	}
+
+	p.runnerFetchMu.Lock()
+	defer p.runnerFetchMu.Unlock()
+
+	if runners, meta, ok := p.cachedRunners(false); ok {
+		return runners, meta, nil
+	}
+
+	runners, err := p.fetchRunners(ctx)
+	if err != nil {
+		if allowStale {
+			if cached, meta, ok := p.cachedRunners(true); ok {
+				meta.Stale = true
+				meta.Error = err.Error()
+				return cached, meta, nil
+			}
+		}
+		return nil, domain.RunnerInventoryMeta{}, err
+	}
+
+	p.storeRunnerCache(runners)
+	return append([]domain.Runner(nil), runners...), p.runnerInventoryMeta(time.Now(), false), nil
+}
+
+func (p *Provider) fetchRunners(ctx context.Context) ([]domain.Runner, error) {
 	opts := &gh.ListRunnersOptions{
 		ListOptions: gh.ListOptions{PerPage: 100},
 	}
@@ -87,6 +165,55 @@ func (p *Provider) ListRunners(ctx context.Context) ([]domain.Runner, error) {
 		opts.Page = resp.NextPage
 	}
 	return runners, nil
+}
+
+func (p *Provider) storeRunnerCache(runners []domain.Runner) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.runnerCache = append([]domain.Runner(nil), runners...)
+	p.runnerCacheFetchedAt = time.Now()
+}
+
+func (p *Provider) cachedRunners(allowStale bool) ([]domain.Runner, domain.RunnerInventoryMeta, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.runnerCacheFetchedAt.IsZero() {
+		return nil, domain.RunnerInventoryMeta{}, false
+	}
+
+	now := time.Now()
+	age := now.Sub(p.runnerCacheFetchedAt)
+	if age < 0 {
+		age = 0
+	}
+	if p.runnerCacheTTL > 0 && age <= p.runnerCacheTTL {
+		return append([]domain.Runner(nil), p.runnerCache...), p.runnerInventoryMetaLocked(now, false), true
+	}
+	if allowStale && p.runnerStaleTTL > 0 && age <= p.runnerStaleTTL {
+		return append([]domain.Runner(nil), p.runnerCache...), p.runnerInventoryMetaLocked(now, true), true
+	}
+	return nil, domain.RunnerInventoryMeta{}, false
+}
+
+func (p *Provider) runnerInventoryMeta(now time.Time, stale bool) domain.RunnerInventoryMeta {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.runnerInventoryMetaLocked(now, stale)
+}
+
+func (p *Provider) runnerInventoryMetaLocked(now time.Time, stale bool) domain.RunnerInventoryMeta {
+	age := now.Sub(p.runnerCacheFetchedAt)
+	if age < 0 {
+		age = 0
+	}
+	ageSeconds := int(math.Round(age.Seconds()))
+	return domain.RunnerInventoryMeta{
+		Stale:     stale,
+		AgeS:      ageSeconds,
+		FetchedAt: p.runnerCacheFetchedAt.UTC().Format(time.RFC3339),
+	}
 }
 
 // GetRegistrationToken returns a short-lived runner registration token.

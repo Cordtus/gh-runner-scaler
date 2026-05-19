@@ -113,7 +113,19 @@ type RunnerMetrics struct {
 	PermanentRunners       int            `json:"permanent_runners"`
 	ProvisioningRunners    int            `json:"provisioning_runners"`
 	UtilizationPct         float64        `json:"utilization_pct"`
+	RunnerInventoryStale   bool           `json:"runner_inventory_stale,omitempty"`
+	RunnerInventoryAgeS    int            `json:"runner_inventory_age_s,omitempty"`
+	RunnerInventoryAt      string         `json:"runner_inventory_at,omitempty"`
+	RunnerInventoryError   string         `json:"runner_inventory_error,omitempty"`
 	Runners                []RunnerDetail `json:"runners"`
+}
+
+// RunnerInventoryMeta describes the freshness of the runner inventory used for metrics.
+type RunnerInventoryMeta struct {
+	Stale     bool
+	AgeS      int
+	FetchedAt string
+	Error     string
 }
 
 // WorkflowMetrics captures a single completed workflow run.

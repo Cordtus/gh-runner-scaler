@@ -105,6 +105,7 @@ type collectMetricsTestCI struct {
 	metricsTestCI
 	runners             []domain.Runner
 	runnersErr          error
+	runnerInventoryMeta domain.RunnerInventoryMeta
 	workflowRunsBatches [][]domain.WorkflowMetrics
 	workflowCall        int
 	enrichCalls         [][]domain.WorkflowMetrics
@@ -117,6 +118,11 @@ func (m *collectMetricsTestCI) ListRunners(_ context.Context) ([]domain.Runner, 
 		return nil, m.runnersErr
 	}
 	return append([]domain.Runner(nil), m.runners...), nil
+}
+
+func (m *collectMetricsTestCI) ListRunnersForMetrics(ctx context.Context) ([]domain.Runner, domain.RunnerInventoryMeta, error) {
+	runners, err := m.ListRunners(ctx)
+	return runners, m.runnerInventoryMeta, err
 }
 
 func (m *collectMetricsTestCI) ListRecentWorkflowRuns(ctx context.Context, perRepo int) ([]domain.WorkflowMetrics, error) {
@@ -444,6 +450,50 @@ func TestCollectAndPush_ContinuesWorkflowAndHostMetricsWhenRunnerListFails(t *te
 	}
 	if got := *backend.hostBatches[0].RunnerContainersStopped; got != 1 {
 		t.Fatalf("runner containers stopped = %d, want 1", got)
+	}
+}
+
+func TestCollectAndPush_MarksStaleRunnerInventory(t *testing.T) {
+	ci := &collectMetricsTestCI{
+		metricsTestCI: metricsTestCI{prefix: "auto"},
+		runners: []domain.Runner{
+			{ID: 1, Name: "auto-1", Status: "online", Busy: false},
+		},
+		runnerInventoryMeta: domain.RunnerInventoryMeta{
+			Stale:     true,
+			AgeS:      75,
+			FetchedAt: "2026-05-19T16:00:00Z",
+			Error:     "listing runners: rate limited",
+		},
+	}
+	backend := &metricsRecorder{}
+	daemon := New(
+		Config{Prefix: "auto"},
+		nil,
+		ci,
+		backend,
+		nil,
+		nil,
+		testLogger(),
+	)
+
+	daemon.collectAndPush(context.Background())
+
+	if len(backend.runnerBatches) != 1 {
+		t.Fatalf("runner batch count = %d, want 1", len(backend.runnerBatches))
+	}
+	got := backend.runnerBatches[0]
+	if !got.RunnerInventoryStale {
+		t.Fatal("RunnerInventoryStale = false, want true")
+	}
+	if got.RunnerInventoryAgeS != 75 {
+		t.Fatalf("RunnerInventoryAgeS = %d, want 75", got.RunnerInventoryAgeS)
+	}
+	if got.RunnerInventoryAt != "2026-05-19T16:00:00Z" {
+		t.Fatalf("RunnerInventoryAt = %q, want 2026-05-19T16:00:00Z", got.RunnerInventoryAt)
+	}
+	if got.RunnerInventoryError != "listing runners: rate limited" {
+		t.Fatalf("RunnerInventoryError = %q, want listing runners: rate limited", got.RunnerInventoryError)
 	}
 }
 

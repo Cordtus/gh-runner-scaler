@@ -391,9 +391,15 @@ func (d *Daemon) metricsLoop(ctx context.Context) {
 // collectAndPush gathers runner, workflow, and host metrics and pushes them.
 func (d *Daemon) collectAndPush(ctx context.Context) {
 	// Runner metrics.
-	runners, err := d.ci.ListRunners(ctx)
+	runners, runnerInventory, err := d.listRunnersForMetrics(ctx)
 	if err != nil {
 		d.log.Error("failed to list runners for metrics", "error", err)
+	} else if runnerInventory.Stale {
+		d.log.Info("using stale runner inventory for metrics",
+			"event_type", "runner_inventory", "action", "stale_metrics",
+			"runner_inventory_age_s", runnerInventory.AgeS,
+			"runner_inventory_error", runnerInventory.Error,
+		)
 	}
 
 	var allContainers []domain.Container
@@ -412,6 +418,10 @@ func (d *Daemon) collectAndPush(ctx context.Context) {
 
 	if err == nil {
 		rm := buildRunnerMetrics(runners, autoContainers, d.ci)
+		rm.RunnerInventoryStale = runnerInventory.Stale
+		rm.RunnerInventoryAgeS = runnerInventory.AgeS
+		rm.RunnerInventoryAt = runnerInventory.FetchedAt
+		rm.RunnerInventoryError = runnerInventory.Error
 		if err := d.metrics.PushRunnerMetrics(ctx, rm); err != nil {
 			d.log.Error("failed to push runner metrics", "error", err)
 		}
@@ -449,6 +459,15 @@ func (d *Daemon) collectAndPush(ctx context.Context) {
 	}
 
 	d.collectLogDerivedMetrics(ctx)
+}
+
+func (d *Daemon) listRunnersForMetrics(ctx context.Context) ([]domain.Runner, domain.RunnerInventoryMeta, error) {
+	if provider, ok := d.ci.(iface.RunnerInventoryMetricsProvider); ok {
+		return provider.ListRunnersForMetrics(ctx)
+	}
+
+	runners, err := d.ci.ListRunners(ctx)
+	return runners, domain.RunnerInventoryMeta{}, err
 }
 
 // collectHostMetrics attempts to gather host-level metrics from the runtime.

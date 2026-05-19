@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	gh "github.com/google/go-github/v74/github"
 
@@ -58,6 +59,139 @@ func TestListRunners_PaginatesAcrossAllPages(t *testing.T) {
 	}
 	if runners[1].Name != "auto-2" {
 		t.Fatalf("expected second runner from next page, got %q", runners[1].Name)
+	}
+}
+
+func TestListRunners_DoesNotReuseFreshCache(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/orgs/test-org/actions/runners" {
+			http.NotFound(w, r)
+			return
+		}
+		calls++
+		writeJSON(t, w, map[string]any{
+			"total_count": 1,
+			"runners": []map[string]any{{
+				"id":     1,
+				"name":   "auto-1",
+				"status": "online",
+				"busy":   false,
+				"labels": []map[string]any{},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	provider := testProvider(t, server)
+	provider.SetRunnerCacheTTL(time.Minute)
+	first, err := provider.ListRunners(context.Background())
+	if err != nil {
+		t.Fatalf("first ListRunners returned error: %v", err)
+	}
+	second, err := provider.ListRunners(context.Background())
+	if err != nil {
+		t.Fatalf("second ListRunners returned error: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("runner API calls = %d, want 2", calls)
+	}
+	if len(first) != 1 || len(second) != 1 || first[0].Name != second[0].Name {
+		t.Fatalf("unexpected runners: first=%+v second=%+v", first, second)
+	}
+}
+
+func TestListRunnersForMetrics_ReusesFreshEmptyCache(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/orgs/test-org/actions/runners" {
+			http.NotFound(w, r)
+			return
+		}
+		calls++
+		writeJSON(t, w, map[string]any{
+			"total_count": 0,
+			"runners":     []map[string]any{},
+		})
+	}))
+	defer server.Close()
+
+	provider := testProvider(t, server)
+	provider.SetRunnerCacheTTL(time.Minute)
+	first, err := provider.ListRunners(context.Background())
+	if err != nil {
+		t.Fatalf("first ListRunners returned error: %v", err)
+	}
+	second, meta, err := provider.ListRunnersForMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("ListRunnersForMetrics returned error: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("runner API calls = %d, want 1", calls)
+	}
+	if meta.Stale {
+		t.Fatal("meta.Stale = true, want false")
+	}
+	if len(first) != 0 || len(second) != 0 {
+		t.Fatalf("unexpected cached runners: first=%+v second=%+v", first, second)
+	}
+}
+
+func TestListRunnersForMetrics_UsesStaleCacheOnFailure(t *testing.T) {
+	fail := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/orgs/test-org/actions/runners" {
+			http.NotFound(w, r)
+			return
+		}
+		if fail {
+			http.Error(w, "rate limited", http.StatusForbidden)
+			return
+		}
+		writeJSON(t, w, map[string]any{
+			"total_count": 1,
+			"runners": []map[string]any{{
+				"id":     1,
+				"name":   "auto-1",
+				"status": "online",
+				"busy":   false,
+				"labels": []map[string]any{},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	provider := testProvider(t, server)
+	provider.SetRunnerCacheTTL(1 * time.Nanosecond)
+	provider.SetRunnerStaleTTL(time.Hour)
+	if _, err := provider.ListRunners(context.Background()); err != nil {
+		t.Fatalf("priming ListRunners returned error: %v", err)
+	}
+	time.Sleep(time.Millisecond)
+	fail = true
+
+	runners, meta, err := provider.ListRunnersForMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("ListRunnersForMetrics returned error: %v", err)
+	}
+	if !meta.Stale {
+		t.Fatal("meta.Stale = false, want true")
+	}
+	if meta.AgeS < 0 {
+		t.Fatalf("meta.AgeS = %d, want >= 0", meta.AgeS)
+	}
+	if meta.FetchedAt == "" {
+		t.Fatal("meta.FetchedAt is empty")
+	}
+	if !strings.Contains(meta.Error, "listing runners") || !strings.Contains(meta.Error, "403") {
+		t.Fatalf("meta.Error = %q, want wrapped 403 error", meta.Error)
+	}
+	if len(runners) != 1 || runners[0].Name != "auto-1" {
+		t.Fatalf("unexpected stale runners: %+v", runners)
+	}
+
+	if _, err := provider.ListRunners(context.Background()); err == nil {
+		t.Fatal("ListRunners returned nil error after cache expiry, want API failure")
 	}
 }
 
