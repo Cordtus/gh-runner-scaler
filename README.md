@@ -186,6 +186,16 @@ Options:
 
 GitHub publishes webhook source IPs via the [meta API](https://api.github.com/meta) under the `hooks` key.
 
+### GitHub API Use
+
+The scaler uses the GitHub Actions API for platform state that the runner host cannot infer locally:
+
+- `GET /orgs/<org>/actions/runners`: runner inventory for reconcile decisions and runner-capacity metrics. This is the only authoritative source for whether GitHub currently sees a runner as online, busy, idle, or offline, and it provides runner IDs needed for API cleanup.
+- Organization registration/removal token APIs: short-lived tokens for registering new ephemeral runners and removing completed ones.
+- Workflow run/job APIs: optional completed-workflow metrics and failure enrichment for the Grafana dashboard.
+
+Fresh reconcile passes always read runner inventory from GitHub before making scale-up/scale-down decisions. Successful reconcile reads are cached briefly so the metrics loop does not immediately duplicate the same API call. Metrics may reuse a bounded stale runner snapshot during transient GitHub API or rate-limit failures, and the metrics payload marks `runner_inventory_stale`, `runner_inventory_age_s`, `runner_inventory_at`, and `runner_inventory_error` so the dashboard can distinguish stale capacity data from live GitHub state.
+
 ### Grafana Cloud (optional)
 
 For the metrics + dashboard integration:

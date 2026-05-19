@@ -42,3 +42,10 @@ type CIProvider interface {
 	// enrichment is available.
 	EnrichWorkflowMetrics(ctx context.Context, runs []domain.WorkflowMetrics) ([]domain.WorkflowMetrics, error)
 }
+
+// RunnerInventoryMetricsProvider is an optional CI extension for dashboards.
+// It may return bounded stale inventory with metadata; reconcile must keep using
+// CIProvider.ListRunners for fresh authoritative state.
+type RunnerInventoryMetricsProvider interface {
+	ListRunnersForMetrics(ctx context.Context) ([]domain.Runner, domain.RunnerInventoryMeta, error)
+}
