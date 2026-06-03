@@ -2,8 +2,6 @@
 
 Auto-scaler for GitHub Actions self-hosted runners on LXC containers. Configurable number of persistent runners, scaling by coping a non-running LXC 'template' container if persistent runners are busy, and tears them down after idle timeout or job completion.
 
-Single Go binary. Every external dependency (LXD, GitHub, Loki) is a swappable module -- it is possible to add or replace existing services (Docker, GitLab, Supabase, gcloud gRPC, etc.) without changing core logic.
-
 ## Architecture
 
 ```
