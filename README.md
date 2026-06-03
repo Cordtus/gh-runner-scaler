@@ -1,8 +1,8 @@
 # gh-runner-scaler
 
-Auto-scaler for GitHub Actions self-hosted runners on LXC containers. Clones ephemeral containers from a stopped LXC 'template' container when all runners are busy, tears them down after idle timeout or job completion.
+Auto-scaler for GitHub Actions self-hosted runners on LXC containers. Configurable number of persistent runners, scaling by coping a non-running LXC 'template' container if persistent runners are busy, and tears them down after idle timeout or job completion.
 
-Single Go binary, interface-driven architecture. Every external dependency (LXD, GitHub, Loki) is a swappable module behind an interface -- add new backends (Docker, GitLab, Supabase, gcloud gRPC, etc.) without changing core logic.
+Single Go binary. Every external dependency (LXD, GitHub, Loki) is a swappable module -- it is possible to add or replace existing services (Docker, GitLab, Supabase, gcloud gRPC, etc.) without changing core logic.
 
 ## Architecture
 
