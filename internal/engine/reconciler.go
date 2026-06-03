@@ -296,6 +296,10 @@ func (r *Reconciler) scaleDown(ctx context.Context, name string, runners []domai
 	// Belt-and-suspenders: delete via API.
 	for _, runner := range runners {
 		if runner.Name == name {
+			if runner.Busy {
+				r.log.Info("skipping API runner delete because runner is busy", "container", name, "id", runner.ID)
+				break
+			}
 			if err := r.ci.DeleteRunner(ctx, runner.ID); err != nil {
 				r.log.Warn("API runner delete failed", "container", name, "error", err)
 			} else {

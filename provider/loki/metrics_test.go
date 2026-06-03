@@ -12,6 +12,20 @@ import (
 	"github.com/Cordtus/gh-runner-scaler/internal/domain"
 )
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
+}
+
+type temporaryNetError struct {
+	msg string
+}
+
+func (e temporaryNetError) Error() string   { return e.msg }
+func (e temporaryNetError) Timeout() bool   { return false }
+func (e temporaryNetError) Temporary() bool { return true }
+
 func TestPushWorkflowMetrics_SendsIndividualLogEntries(t *testing.T) {
 	requests := 0
 	var captured lokiPayload
@@ -137,6 +151,54 @@ func TestPushWorkflowMetrics_SortsEqualAndMissingCompletedAtDeterministically(t 
 
 	if ordered[0].RunID != 1 || ordered[1].RunID != 2 || ordered[2].RunID != 3 {
 		t.Fatalf("ordered run IDs = [%d %d %d], want [1 2 3]", ordered[0].RunID, ordered[1].RunID, ordered[2].RunID)
+	}
+}
+
+func TestPushRunnerMetrics_RetriesTemporaryTransportErrors(t *testing.T) {
+	attempts := 0
+	backend := New("https://logs.example/loki/api/v1/push", "user", "key", "Axionic-Labs")
+	backend.retries = []time.Duration{0}
+	backend.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			return nil, temporaryNetError{msg: "lookup logs.example: server misbehaving"}
+		}
+		return &http.Response{
+			StatusCode: http.StatusNoContent,
+			Body:       http.NoBody,
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})}
+
+	if err := backend.PushRunnerMetrics(context.Background(), domain.RunnerMetrics{TotalRunners: 1}); err != nil {
+		t.Fatalf("PushRunnerMetrics returned error: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+}
+
+func TestPushRunnerMetrics_RetriesServerErrors(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	backend := New(server.URL, "user", "key", "Axionic-Labs")
+	backend.retries = []time.Duration{0}
+
+	if err := backend.PushRunnerMetrics(context.Background(), domain.RunnerMetrics{TotalRunners: 1}); err != nil {
+		t.Fatalf("PushRunnerMetrics returned error: %v", err)
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d, want 2", requests)
 	}
 }
 

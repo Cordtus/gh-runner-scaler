@@ -471,8 +471,8 @@ func TestReconcile_RefreshesContainerStatusesBeforeScaleUpCapacityDecision(t *te
 	if status := runtime.containers["auto-1"]; status != domain.StatusRunning {
 		t.Fatalf("auto-1 status = %v, want running after replacement scale-up", status)
 	}
-	if len(ci.deletedIDs) != 1 || ci.deletedIDs[0] != 1 {
-		t.Fatalf("deleted runner IDs = %v, want [1]", ci.deletedIDs)
+	if len(ci.deletedIDs) != 0 {
+		t.Fatalf("deleted runner IDs = %v, want none while runner is busy", ci.deletedIDs)
 	}
 }
 
@@ -632,6 +632,35 @@ func TestNoScaleDown_BusyRunner(t *testing.T) {
 	defer state.mu.Unlock()
 	if time.Since(state.states["auto-1"]) > 5*time.Second {
 		t.Error("last-active should have been refreshed")
+	}
+}
+
+func TestScaleDown_SkipsAPIDeleteWhenRunnerStillBusy(t *testing.T) {
+	runtime := newMockRuntime()
+	runtime.containers["auto-1"] = domain.StatusStopped
+
+	ci := &mockCI{
+		runners:     []domain.Runner{{ID: 1, Name: "auto-1", Busy: true, Status: "online"}},
+		removeToken: "remove-token",
+		prefix:      "auto",
+	}
+	state := newMockState()
+	state.states["auto-1"] = time.Now()
+
+	r := newTestReconciler(runtime, ci, state, nil)
+	r.cfg.MaxAutoRunners = 0
+
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if _, ok := runtime.containers["auto-1"]; ok {
+		t.Fatal("stopped busy runner container should still be deleted")
+	}
+	if len(ci.deletedIDs) != 0 {
+		t.Fatalf("deleted runner IDs = %v, want none", ci.deletedIDs)
 	}
 }
 

@@ -9,7 +9,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"sort"
 	"strconv"
@@ -25,6 +27,7 @@ type Backend struct {
 	apiKey   string
 	org      string
 	client   *http.Client
+	retries  []time.Duration
 }
 
 // New creates a Loki metrics backend.
@@ -37,6 +40,7 @@ func New(pushURL, username, apiKey, org string) *Backend {
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 		},
+		retries: []time.Duration{250 * time.Millisecond, 1 * time.Second},
 	}
 }
 
@@ -200,23 +204,65 @@ func (b *Backend) pushPayload(ctx context.Context, payload lokiPayload) error {
 		return fmt.Errorf("marshaling Loki payload: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.pushURL, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("creating Loki request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.SetBasicAuth(b.username, b.apiKey)
+	var lastErr error
+	for attempt := 0; attempt <= len(b.retries); attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.pushURL, bytes.NewReader(body))
+		if err != nil {
+			return fmt.Errorf("creating Loki request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.SetBasicAuth(b.username, b.apiKey)
 
-	resp, err := b.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("pushing to Loki: %w", err)
-	}
-	defer resp.Body.Close()
+		resp, err := b.client.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("pushing to Loki: %w", err)
+			if attempt < len(b.retries) && isRetryableLokiError(err) {
+				if sleepContext(ctx, b.retries[attempt]) != nil {
+					return lastErr
+				}
+				continue
+			}
+			return lastErr
+		}
 
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("Loki push returned %d", resp.StatusCode)
+		statusCode := resp.StatusCode
+		resp.Body.Close()
+		if statusCode == http.StatusOK || statusCode == http.StatusNoContent {
+			return nil
+		}
+		lastErr = fmt.Errorf("Loki push returned %d", statusCode)
+		if attempt < len(b.retries) && isRetryableLokiStatus(statusCode) {
+			if sleepContext(ctx, b.retries[attempt]) != nil {
+				return lastErr
+			}
+			continue
+		}
+		return lastErr
 	}
-	return nil
+	return lastErr
+}
+
+func isRetryableLokiStatus(statusCode int) bool {
+	return statusCode == http.StatusTooManyRequests || statusCode >= 500
+}
+
+func isRetryableLokiError(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Temporary()
+}
+
+func sleepContext(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func entryTimestamp(entry any) time.Time {

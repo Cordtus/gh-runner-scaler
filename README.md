@@ -45,7 +45,7 @@ clone template -> start -> wait for boot (90s max)
 3. Running, registered, busy -- refresh last-active timestamp
 4. Running, registered, idle past `idle_timeout` -- teardown
 
-Deregistration is belt-and-suspenders: `config.sh remove` followed by a GitHub API DELETE. Cleanup keeps going after best-effort service-stop or deregistration errors. If the container delete succeeds, the reconciler treats that runner as removed for capacity and next-name decisions, so a replacement can still be created even when cleanup logged warnings.
+Deregistration is belt-and-suspenders: `config.sh remove` followed by a GitHub API DELETE when GitHub no longer reports the runner as busy. Cleanup keeps going after best-effort service-stop or deregistration errors. If the container delete succeeds, the reconciler treats that runner as removed for capacity and next-name decisions, so a replacement can still be created even when cleanup logged warnings.
 
 **Webhook** is the primary event driver. `workflow_job.queued` and `workflow_job.completed` events trigger the scaler within 2 seconds (debounced). When `[[runner_classes]]` are configured, the daemon routes the trigger to the class whose `match_labels` are present in the job's `runs-on` labels. `push` events to tracked repos trigger cache volume syncs via `lxc exec` on a running container when the push targets that repo's default branch.
 
@@ -461,6 +461,8 @@ curl -H "Authorization: Bearer $GH_SCALER_LOG_TOKEN" \
 | `collect_host` | `true` | Include container counts and storage pool usage |
 
 Loki-specific settings under `[metrics.loki]` are set via environment variables.
+
+Loki pushes retry short-lived transport failures, including temporary DNS resolver errors, before surfacing the push failure in logs.
 
 When metrics are enabled, the daemon also derives two additional observability streams from the retained structured event history in the state dir:
 
