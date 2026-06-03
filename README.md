@@ -45,7 +45,7 @@ clone template -> start -> wait for boot (90s max)
 3. Running, registered, busy -- refresh last-active timestamp
 4. Running, registered, idle past `idle_timeout` -- teardown
 
-Deregistration is belt-and-suspenders: `config.sh remove` followed by a GitHub API DELETE when GitHub no longer reports the runner as busy. Cleanup keeps going after best-effort service-stop or deregistration errors. If the container delete succeeds, the reconciler treats that runner as removed for capacity and next-name decisions, so a replacement can still be created even when cleanup logged warnings.
+Deregistration uses two cleanup paths: `config.sh remove` inside the runner, then a GitHub API DELETE when GitHub no longer reports the runner as busy. Cleanup keeps going after service-stop or deregistration errors because deleting the container is the authoritative local cleanup step. If the container delete succeeds, the reconciler treats that runner as removed for capacity and next-name decisions, so a replacement can still be created even when cleanup logged warnings.
 
 **Webhook** is the primary event driver. `workflow_job.queued` and `workflow_job.completed` events trigger the scaler within 2 seconds (debounced). When `[[runner_classes]]` are configured, the daemon routes the trigger to the class whose `match_labels` are present in the job's `runs-on` labels. `push` events to tracked repos trigger cache volume syncs via `lxc exec` on a running container when the push targets that repo's default branch.
 
@@ -65,7 +65,7 @@ The binary is statically compiled with no runtime dependencies. The host needs:
 | ZFS | Y | Fast same-pool clones for scale-up |
 | GitHub classic PAT | Y | Runner management, webhook events |
 | Network access from GitHub | If webhook enabled | Receives `workflow_job` and `push` events |
-| Grafana Cloud (Loki) | If metrics enabled | Dashboard visualization |
+| Grafana + Loki, or Grafana Cloud with Loki enabled | If metrics enabled | Dashboard visualization |
 
 ### LXD
 
@@ -196,15 +196,19 @@ The scaler uses the GitHub Actions API for platform state that the runner host c
 
 Fresh reconcile passes always read runner inventory from GitHub before making scale-up/scale-down decisions. Successful reconcile reads are cached briefly so the metrics loop does not immediately duplicate the same API call. Metrics may reuse a bounded stale runner snapshot during transient GitHub API or rate-limit failures, and the metrics payload marks `runner_inventory_stale`, `runner_inventory_age_s`, `runner_inventory_at`, and `runner_inventory_error` so the dashboard can distinguish stale capacity data from live GitHub state.
 
-### Grafana Cloud (optional)
+### Grafana + Loki (optional)
 
-For the metrics + dashboard integration:
+Metrics require a Loki push endpoint and a Grafana dashboard pointed at that Loki datasource. Either a self-managed Grafana + Loki deployment or Grafana Cloud with Loki enabled is fine.
+
+For Grafana Cloud:
 
 | Value | Source |
 |-------|--------|
 | Loki push URL | Grafana Cloud > your stack > Loki > Details |
 | Loki username | Instance ID shown on the same page |
 | API key | Grafana Cloud > API Keys > create with Loki write scope |
+
+For self-managed Loki, use the Loki push URL and credentials configured for your deployment.
 
 ---
 
@@ -460,7 +464,7 @@ curl -H "Authorization: Bearer $GH_SCALER_LOG_TOKEN" \
 | `workflow_repo_batch_size` | `25` | Max repos scanned per workflow-metrics interval (`0` = scan all repos) |
 | `collect_host` | `true` | Include container counts and storage pool usage |
 
-Loki-specific settings under `[metrics.loki]` are set via environment variables.
+Loki-specific settings under `[metrics.loki]` are set via environment variables. They can point to either self-managed Loki or Grafana Cloud Loki.
 
 Loki pushes retry short-lived transport failures, including temporary DNS resolver errors, before surfacing the push failure in logs.
 
@@ -677,7 +681,7 @@ Two dashboard artifacts live under `deploy/`:
 
 Treat `deploy/grafana-dashboard.json` as the source of truth for the metrics contract in this repo. Keep `deploy/grafana-dashboard-old.json` for export/schema comparisons or for operators who specifically want the fuller Grafana-export shape.
 
-Both dashboards require a Loki datasource receiving metrics from the scaler. They show:
+Both dashboards require Grafana with a Loki datasource receiving metrics from the scaler. That datasource can be backed by self-managed Loki or by Grafana Cloud with Loki enabled. The dashboards show:
 
 - Runner capacity health, including provisioning runners during scale-up
 - Lifecycle analytics such as queue wait, jobs per runner lifecycle, reuse rate, and scale-down-to-next-scale-up gap
