@@ -196,7 +196,7 @@ The scaler uses the GitHub Actions API for platform state that the runner host c
 
 Fresh reconcile passes always read runner inventory from GitHub before making scale-up/scale-down decisions. Successful reconcile reads are cached briefly so the metrics loop does not immediately duplicate the same API call. Metrics may reuse a bounded stale runner snapshot during transient GitHub API or rate-limit failures, and the metrics payload marks `runner_inventory_stale`, `runner_inventory_age_s`, `runner_inventory_at`, and `runner_inventory_error` so the dashboard can distinguish stale capacity data from live GitHub state.
 
-Because runners are intentionally created and removed over and over, GitHub's runner/audit logs will contain a lot of routine registration and deregistration noise. This is expected for an ephemeral runner scaler.
+Because the runners are created and removed over and over during regular operation, GitHub's runner/audit logs will contain significant and unavoidable noise related to this.
 
 ### Grafana + Loki (optional)
 
