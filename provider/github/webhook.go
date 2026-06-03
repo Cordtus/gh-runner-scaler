@@ -95,6 +95,7 @@ func parseWorkflowJob(payload []byte) (*domain.WebhookEvent, error) {
 	}
 
 	job := event.GetWorkflowJob()
+	labels := append([]string(nil), job.Labels...)
 	commit := job.GetHeadSHA()
 	shortCommit := commit
 	if len(shortCommit) > 7 {
@@ -124,6 +125,7 @@ func parseWorkflowJob(payload []byte) (*domain.WebhookEvent, error) {
 		RunID:      job.GetRunID(),
 		RunAttempt: int(job.GetRunAttempt()),
 		Detail:     detail,
+		Labels:     labels,
 	}, nil
 }
 

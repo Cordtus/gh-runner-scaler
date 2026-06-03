@@ -5,6 +5,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -33,6 +34,18 @@ type Config struct {
 	SyncRepos        map[string]string // repo -> cache path
 }
 
+// RunnerGroup is one logical runner class managed by the daemon.
+type RunnerGroup struct {
+	ID          string
+	Prefix      string
+	MatchLabels []string
+	CachePool   string
+	Reconciler  *engine.Reconciler
+	CI          iface.CIProvider
+	Runtime     iface.ContainerRuntime
+	Metrics     iface.MetricsBackend
+}
+
 // Daemon runs all subsystems as goroutines in a single process.
 type Daemon struct {
 	cfg        Config
@@ -40,10 +53,11 @@ type Daemon struct {
 	ci         iface.CIProvider
 	metrics    iface.MetricsBackend
 	runtime    iface.ContainerRuntime
+	groups     []RunnerGroup
 	logStore   *LogStore
 	log        *slog.Logger
 
-	triggerCh chan struct{}
+	triggerCh chan string
 	debouncer *debouncer
 	mu        sync.Mutex
 
@@ -107,18 +121,49 @@ func New(
 	logStore *LogStore,
 	log *slog.Logger,
 ) *Daemon {
+	group := RunnerGroup{
+		ID:         "default",
+		Prefix:     cfg.Prefix,
+		CachePool:  cfg.CachePool,
+		Reconciler: reconciler,
+		CI:         ci,
+		Runtime:    runtime,
+		Metrics:    metrics,
+	}
+	return NewWithRunnerGroups(cfg, []RunnerGroup{group}, metrics, logStore, log)
+}
+
+// NewWithRunnerGroups creates a daemon that can route jobs to multiple logical runner classes.
+func NewWithRunnerGroups(
+	cfg Config,
+	groups []RunnerGroup,
+	metrics iface.MetricsBackend,
+	logStore *LogStore,
+	log *slog.Logger,
+) *Daemon {
 	if log == nil {
 		log = slog.Default()
 	}
+	if len(groups) == 0 {
+		panic("daemon requires at least one runner group")
+	}
+	groups = append([]RunnerGroup(nil), groups...)
+	for i := range groups {
+		if groups[i].Metrics == nil {
+			groups[i].Metrics = metrics
+		}
+	}
+	primary := groups[0]
 	d := &Daemon{
 		cfg:               cfg,
-		reconciler:        reconciler,
-		ci:                ci,
+		reconciler:        primary.Reconciler,
+		ci:                primary.CI,
 		metrics:           metrics,
-		runtime:           runtime,
+		runtime:           primary.Runtime,
+		groups:            groups,
 		logStore:          logStore,
 		log:               log,
-		triggerCh:         make(chan struct{}, 1),
+		triggerCh:         make(chan string, len(groups)+1),
 		debouncer:         newDebouncer(),
 		workflowDelivered: make(map[string]struct{}),
 		issueDelivered:    make(map[string]struct{}),
@@ -176,6 +221,15 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 // Trigger requests an immediate reconcile (called by webhook handler).
 func (d *Daemon) Trigger() {
+	d.triggerGroup("")
+}
+
+// TriggerGroup requests an immediate reconcile for a single runner group.
+func (d *Daemon) TriggerGroup(groupID string) {
+	d.triggerGroup(groupID)
+}
+
+func (d *Daemon) triggerGroup(groupID string) {
 	d.mu.Lock()
 	d.triggerSeq++
 	running := d.reconcileRunning
@@ -186,7 +240,7 @@ func (d *Daemon) Trigger() {
 	}
 
 	select {
-	case d.triggerCh <- struct{}{}:
+	case d.triggerCh <- groupID:
 	default:
 		// Channel full -- a trigger is already pending.
 	}
@@ -207,8 +261,8 @@ func (d *Daemon) reconcileLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			d.doReconcile(ctx)
-		case <-d.triggerCh:
-			d.doReconcile(ctx)
+		case groupID := <-d.triggerCh:
+			d.doReconcileGroups(ctx, []string{groupID})
 			ticker.Reset(d.cfg.PollInterval) // avoid redundant tick
 		}
 	}
@@ -216,6 +270,10 @@ func (d *Daemon) reconcileLoop(ctx context.Context) {
 
 // doReconcile runs a single reconcile pass with mutex protection.
 func (d *Daemon) doReconcile(ctx context.Context) {
+	d.doReconcileGroups(ctx, nil)
+}
+
+func (d *Daemon) doReconcileGroups(ctx context.Context, requested []string) {
 	d.mu.Lock()
 	if d.reconcileRunning {
 		d.mu.Unlock()
@@ -233,7 +291,7 @@ func (d *Daemon) doReconcile(ctx context.Context) {
 			return
 		}
 
-		d.drainTriggerSignals()
+		requested = mergeRequestedGroups(requested, d.drainTriggerSignals())
 
 		startedAt := time.Now().UTC()
 
@@ -242,7 +300,7 @@ func (d *Daemon) doReconcile(ctx context.Context) {
 		d.lastReconcileStartedAt = startedAt
 		d.mu.Unlock()
 
-		d.drainTriggerSignals()
+		requested = mergeRequestedGroups(requested, d.drainTriggerSignals())
 
 		if ctx.Err() != nil {
 			d.mu.Lock()
@@ -251,7 +309,7 @@ func (d *Daemon) doReconcile(ctx context.Context) {
 			return
 		}
 
-		err := d.reconciler.Reconcile(ctx)
+		err := d.reconcileTargets(ctx, requested)
 		finishedAt := time.Now().UTC()
 
 		d.mu.Lock()
@@ -277,18 +335,72 @@ func (d *Daemon) doReconcile(ctx context.Context) {
 			return
 		}
 
+		requested = nil
 		d.log.Info("reconcile rerun requested")
 	}
 }
 
-func (d *Daemon) drainTriggerSignals() {
-	for {
-		select {
-		case <-d.triggerCh:
-		default:
-			return
+func (d *Daemon) reconcileTargets(ctx context.Context, requested []string) error {
+	targets := d.selectedGroups(requested)
+	var errs []error
+	for _, group := range targets {
+		if group.Reconciler == nil {
+			continue
+		}
+		log := d.log.With("runner_group", group.ID)
+		log.Info("reconcile group started")
+		if err := group.Reconciler.Reconcile(ctx); err != nil {
+			log.Error("reconcile group failed", "error", err)
+			errs = append(errs, fmt.Errorf("%s: %w", group.ID, err))
 		}
 	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
+}
+
+func (d *Daemon) selectedGroups(requested []string) []RunnerGroup {
+	if len(requested) == 0 {
+		return append([]RunnerGroup(nil), d.groups...)
+	}
+	ids := make(map[string]struct{}, len(requested))
+	for _, id := range requested {
+		if id == "" {
+			return append([]RunnerGroup(nil), d.groups...)
+		}
+		ids[id] = struct{}{}
+	}
+	groups := make([]RunnerGroup, 0, len(ids))
+	for _, group := range d.groups {
+		if _, ok := ids[group.ID]; ok {
+			groups = append(groups, group)
+		}
+	}
+	return groups
+}
+
+func (d *Daemon) drainTriggerSignals() []string {
+	var groups []string
+	for {
+		select {
+		case groupID := <-d.triggerCh:
+			groups = append(groups, groupID)
+		default:
+			return groups
+		}
+	}
+}
+
+func mergeRequestedGroups(current, pending []string) []string {
+	if len(pending) == 0 {
+		return current
+	}
+	if len(current) == 0 {
+		return append([]string(nil), pending...)
+	}
+	merged := append([]string(nil), current...)
+	return append(merged, pending...)
 }
 
 func (d *Daemon) recordWebhook(eventType string, event *domain.WebhookEvent) {
@@ -390,89 +502,108 @@ func (d *Daemon) metricsLoop(ctx context.Context) {
 
 // collectAndPush gathers runner, workflow, and host metrics and pushes them.
 func (d *Daemon) collectAndPush(ctx context.Context) {
-	// Runner metrics.
-	runners, runnerInventory, err := d.listRunnersForMetrics(ctx)
-	if err != nil {
-		d.log.Error("failed to list runners for metrics", "error", err)
-	} else if runnerInventory.Stale {
-		d.log.Info("using stale runner inventory for metrics",
-			"event_type", "runner_inventory", "action", "stale_metrics",
-			"runner_inventory_age_s", runnerInventory.AgeS,
-			"runner_inventory_error", runnerInventory.Error,
-		)
-	}
+	d.collectRunnerAndHostMetrics(ctx)
 
-	var allContainers []domain.Container
-	var autoContainers []domain.Container
-	containersLoaded := false
-	if d.runtime != nil && (d.cfg.CollectHost || err == nil) {
-		listed, listErr := d.runtime.ListContainers(ctx, "")
-		if listErr != nil {
-			d.log.Warn("failed to list containers for metrics", "error", listErr)
-		} else {
-			containersLoaded = true
-			allContainers = append([]domain.Container{}, listed...)
-			autoContainers = filterContainersByPrefix(listed, d.cfg.Prefix)
+	d.collectWorkflowMetrics(ctx)
+
+	d.collectLogDerivedMetrics(ctx)
+}
+
+func (d *Daemon) collectRunnerAndHostMetrics(ctx context.Context) {
+	for _, group := range d.groups {
+		if group.CI == nil || group.Metrics == nil {
+			continue
 		}
-	}
-
-	if err == nil {
-		rm := buildRunnerMetrics(runners, autoContainers, d.ci)
-		rm.RunnerInventoryStale = runnerInventory.Stale
-		rm.RunnerInventoryAgeS = runnerInventory.AgeS
-		rm.RunnerInventoryAt = runnerInventory.FetchedAt
-		rm.RunnerInventoryError = runnerInventory.Error
-		if err := d.metrics.PushRunnerMetrics(ctx, rm); err != nil {
-			d.log.Error("failed to push runner metrics", "error", err)
-		}
-	}
-
-	// Workflow metrics.
-	if d.cfg.CollectWorkflows {
-		wm, needsEnrichment, err := d.listWorkflowMetrics(ctx)
+		log := d.log.With("runner_group", group.ID)
+		runners, runnerInventory, err := d.listRunnersForMetrics(ctx, group.CI)
 		if err != nil {
-			d.log.Warn("failed to collect workflow metrics", "error", err)
+			log.Error("failed to list runners for metrics", "error", err)
+		} else if runnerInventory.Stale {
+			log.Info("using stale runner inventory for metrics",
+				"event_type", "runner_inventory", "action", "stale_metrics",
+				"runner_inventory_age_s", runnerInventory.AgeS,
+				"runner_inventory_error", runnerInventory.Error,
+			)
+		}
+
+		var allContainers []domain.Container
+		var autoContainers []domain.Container
+		containersLoaded := false
+		if group.Runtime != nil && (d.cfg.CollectHost || err == nil) {
+			listed, listErr := group.Runtime.ListContainers(ctx, "")
+			if listErr != nil {
+				log.Warn("failed to list containers for metrics", "error", listErr)
+			} else {
+				containersLoaded = true
+				allContainers = append([]domain.Container{}, listed...)
+				autoContainers = filterContainersByPrefix(listed, group.Prefix)
+			}
+		}
+
+		if err == nil {
+			rm := buildRunnerMetrics(runners, autoContainers, group.CI)
+			rm.GroupID = group.ID
+			rm.RunnerInventoryStale = runnerInventory.Stale
+			rm.RunnerInventoryAgeS = runnerInventory.AgeS
+			rm.RunnerInventoryAt = runnerInventory.FetchedAt
+			rm.RunnerInventoryError = runnerInventory.Error
+			if err := group.Metrics.PushRunnerMetrics(ctx, rm); err != nil {
+				log.Error("failed to push runner metrics", "error", err)
+			}
+		}
+
+		if d.cfg.CollectHost {
+			d.collectHostMetrics(ctx, group.ID, group.CachePool, group.Runtime, allContainers, autoContainers, containersLoaded)
+		}
+	}
+}
+
+func (d *Daemon) collectWorkflowMetrics(ctx context.Context) {
+	if !d.cfg.CollectWorkflows {
+		return
+	}
+	for _, group := range d.groups {
+		if group.CI == nil || group.Metrics == nil {
+			continue
+		}
+		log := d.log.With("runner_group", group.ID)
+		wm, needsEnrichment, err := d.listWorkflowMetrics(ctx, group.CI)
+		if err != nil {
+			log.Warn("failed to collect workflow metrics", "error", err)
 		} else if len(wm) > 0 {
 			wm = d.filterNewWorkflowMetrics(wm)
 		}
 		if len(wm) > 0 && needsEnrichment {
-			enriched, enrichErr := d.ci.EnrichWorkflowMetrics(ctx, wm)
+			enriched, enrichErr := group.CI.EnrichWorkflowMetrics(ctx, wm)
 			if len(enriched) > 0 {
 				wm = enriched
 			}
 			if enrichErr != nil {
-				d.log.Warn("failed to enrich workflow metrics", "error", enrichErr)
+				log.Warn("failed to enrich workflow metrics", "error", enrichErr)
 			}
 		}
 		if len(wm) > 0 {
-			if err := d.metrics.PushWorkflowMetrics(ctx, wm); err != nil {
-				d.log.Error("failed to push workflow metrics", "error", err)
+			if err := group.Metrics.PushWorkflowMetrics(ctx, wm); err != nil {
+				log.Error("failed to push workflow metrics", "error", err)
 			} else {
 				d.markWorkflowMetricsDelivered(wm)
 			}
 		}
 	}
-
-	// Host metrics (requires runtime to support it).
-	if d.cfg.CollectHost {
-		d.collectHostMetrics(ctx, allContainers, autoContainers, containersLoaded)
-	}
-
-	d.collectLogDerivedMetrics(ctx)
 }
 
-func (d *Daemon) listRunnersForMetrics(ctx context.Context) ([]domain.Runner, domain.RunnerInventoryMeta, error) {
-	if provider, ok := d.ci.(iface.RunnerInventoryMetricsProvider); ok {
+func (d *Daemon) listRunnersForMetrics(ctx context.Context, ci iface.CIProvider) ([]domain.Runner, domain.RunnerInventoryMeta, error) {
+	if provider, ok := ci.(iface.RunnerInventoryMetricsProvider); ok {
 		return provider.ListRunnersForMetrics(ctx)
 	}
 
-	runners, err := d.ci.ListRunners(ctx)
+	runners, err := ci.ListRunners(ctx)
 	return runners, domain.RunnerInventoryMeta{}, err
 }
 
 // collectHostMetrics attempts to gather host-level metrics from the runtime.
 // This is provider-specific, so we use a type assertion.
-func (d *Daemon) collectHostMetrics(ctx context.Context, allContainers, autoContainers []domain.Container, containersLoaded bool) {
+func (d *Daemon) collectHostMetrics(ctx context.Context, groupID, cachePool string, runtime iface.ContainerRuntime, allContainers, autoContainers []domain.Container, containersLoaded bool) {
 	type hostMetricsSnapshotProvider interface {
 		HostMetricsFromContainers(cachePool string, containers []domain.Container) (domain.HostMetrics, error)
 	}
@@ -486,11 +617,11 @@ func (d *Daemon) collectHostMetrics(ctx context.Context, allContainers, autoCont
 		ok  bool
 	)
 
-	if hmp, snapshotOK := d.runtime.(hostMetricsSnapshotProvider); snapshotOK {
-		hm, err = hmp.HostMetricsFromContainers(d.cfg.CachePool, allContainers)
+	if hmp, snapshotOK := runtime.(hostMetricsSnapshotProvider); snapshotOK {
+		hm, err = hmp.HostMetricsFromContainers(cachePool, allContainers)
 		ok = true
-	} else if hmp, hostOK := d.runtime.(hostMetricsProvider); hostOK {
-		hm, err = hmp.HostMetrics(d.cfg.CachePool)
+	} else if hmp, hostOK := runtime.(hostMetricsProvider); hostOK {
+		hm, err = hmp.HostMetrics(cachePool)
 		ok = true
 	}
 
@@ -514,23 +645,34 @@ func (d *Daemon) collectHostMetrics(ctx context.Context, allContainers, autoCont
 			hm.RunnerContainersRunning = &running
 			hm.RunnerContainersStopped = &stopped
 		}
-		if err := d.metrics.PushHostMetrics(ctx, hm); err != nil {
+		hm.GroupID = groupID
+		metrics := d.metrics
+		for _, group := range d.groups {
+			if group.ID == groupID {
+				metrics = group.Metrics
+				break
+			}
+		}
+		if metrics == nil {
+			return
+		}
+		if err := metrics.PushHostMetrics(ctx, hm); err != nil {
 			d.log.Error("failed to push host metrics", "error", err)
 		}
 	}
 }
 
-func (d *Daemon) listWorkflowMetrics(ctx context.Context) ([]domain.WorkflowMetrics, bool, error) {
+func (d *Daemon) listWorkflowMetrics(ctx context.Context, ci iface.CIProvider) ([]domain.WorkflowMetrics, bool, error) {
 	type shallowWorkflowMetricsProvider interface {
 		ListRecentWorkflowRunsShallow(ctx context.Context, perRepo int) ([]domain.WorkflowMetrics, error)
 	}
 
-	if provider, ok := d.ci.(shallowWorkflowMetricsProvider); ok {
+	if provider, ok := ci.(shallowWorkflowMetricsProvider); ok {
 		runs, err := provider.ListRecentWorkflowRunsShallow(ctx, workflowMetricRunFetchLimit)
 		return runs, true, err
 	}
 
-	runs, err := d.ci.ListRecentWorkflowRuns(ctx, workflowMetricRunFetchLimit)
+	runs, err := ci.ListRecentWorkflowRuns(ctx, workflowMetricRunFetchLimit)
 	return runs, false, err
 }
 

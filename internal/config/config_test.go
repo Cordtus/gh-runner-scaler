@@ -128,6 +128,114 @@ func TestCachePrunePolicy_MatchesConfigAndCopiesPaths(t *testing.T) {
 	}
 }
 
+func TestRunnerClassConfigs_SynthesizesLegacyDefault(t *testing.T) {
+	cfg := validConfig()
+	cfg.Scaler.Prefix = "legacy-auto"
+	cfg.Scaler.Labels = "self-hosted, linux, x64"
+	cfg.Container.Template = "legacy-template"
+
+	classes, err := cfg.RunnerClassConfigs()
+	if err != nil {
+		t.Fatalf("RunnerClassConfigs failed: %v", err)
+	}
+	if len(classes) != 1 {
+		t.Fatalf("expected one synthesized class, got %d", len(classes))
+	}
+	class := classes[0]
+	if class.ID != "default" || class.Prefix != "legacy-auto" || class.Template != "legacy-template" {
+		t.Fatalf("unexpected synthesized class: %+v", class)
+	}
+	if strings.Join(class.MatchLabels, ",") != "self-hosted,linux,x64" {
+		t.Fatalf("unexpected match labels: %v", class.MatchLabels)
+	}
+}
+
+func TestRunnerClassConfigs_ResolvesClassOverridesAndCacheProfile(t *testing.T) {
+	max := 4
+	cfg := validConfig()
+	cfg.CacheProfiles = map[string]CacheConfig{
+		"rust": {
+			Enabled: true,
+			Pool:    "fast",
+			Volume:  "rust-cache",
+			Prune:   cfg.Cache.Prune,
+			Symlinks: []SymlinkConfig{{
+				Source: "/cache/cargo",
+				Target: "/home/runner/.cargo",
+			}},
+		},
+	}
+	cfg.RunnerClasses = []RunnerClassConfig{{
+		ID:             "rust",
+		Org:            "OtherOrg",
+		Prefix:         "rust-auto",
+		MaxAutoRunners: &max,
+		Labels:         "self-hosted,linux,x64,rust",
+		MatchLabels:    []string{"self-hosted", "rust"},
+		Template:       "runner-template-rust",
+		CacheProfile:   "rust",
+	}}
+
+	classes, err := cfg.RunnerClassConfigs()
+	if err != nil {
+		t.Fatalf("RunnerClassConfigs failed: %v", err)
+	}
+	class := classes[0]
+	if class.Org != "OtherOrg" || class.MaxAutoRunners != 4 || class.Template != "runner-template-rust" {
+		t.Fatalf("unexpected class resolution: %+v", class)
+	}
+	if !class.Cache.Enabled || class.Cache.Volume != "rust-cache" {
+		t.Fatalf("expected rust cache profile, got %+v", class.Cache)
+	}
+}
+
+func TestRunnerClassConfigs_BlankMatchLabelsFallBackToRunnerLabels(t *testing.T) {
+	cfg := validConfig()
+	cfg.RunnerClasses = []RunnerClassConfig{{
+		ID:          "rust",
+		Prefix:      "rust-auto",
+		Labels:      "self-hosted, linux, rust",
+		MatchLabels: []string{"", "   "},
+		Template:    "runner-template-rust",
+	}}
+
+	classes, err := cfg.RunnerClassConfigs()
+	if err != nil {
+		t.Fatalf("RunnerClassConfigs failed: %v", err)
+	}
+	if got := strings.Join(classes[0].MatchLabels, ","); got != "self-hosted,linux,rust" {
+		t.Fatalf("match labels = %q, want self-hosted,linux,rust", got)
+	}
+}
+
+func TestValidate_RunnerClassPrefixesMustBeUnique(t *testing.T) {
+	cfg := validConfig()
+	cfg.RunnerClasses = []RunnerClassConfig{
+		{ID: "one", Prefix: "auto-one", Template: "template-one"},
+		{ID: "two", Prefix: "auto-one", Template: "template-two"},
+	}
+
+	err := validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "runner class prefix must be unique") {
+		t.Fatalf("expected duplicate prefix validation error, got %v", err)
+	}
+}
+
+func TestValidate_RunnerClassRequiresKnownCacheProfile(t *testing.T) {
+	cfg := validConfig()
+	cfg.RunnerClasses = []RunnerClassConfig{{
+		ID:           "rust",
+		Prefix:       "rust-auto",
+		Template:     "runner-template-rust",
+		CacheProfile: "missing",
+	}}
+
+	err := validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "unknown cache profile") {
+		t.Fatalf("expected unknown cache profile validation error, got %v", err)
+	}
+}
+
 func TestValidate_RemoteTLSPathsMustBePaired(t *testing.T) {
 	cfg := validConfig()
 	cfg.Container.LXD.RemoteCert = "/tmp/client.crt"

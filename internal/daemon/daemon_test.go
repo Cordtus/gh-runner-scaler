@@ -130,6 +130,30 @@ func (b *blockingCI) EnrichWorkflowMetrics(_ context.Context, runs []domain.Work
 	return append([]domain.WorkflowMetrics(nil), runs...), nil
 }
 
+type countingCI struct {
+	calls atomic.Int32
+}
+
+func (c *countingCI) ListRunners(context.Context) ([]domain.Runner, error) {
+	c.calls.Add(1)
+	return []domain.Runner{{Name: "permanent", Status: "online"}}, nil
+}
+func (c *countingCI) GetRegistrationToken(context.Context) (string, error) { return "", nil }
+func (c *countingCI) GetRemoveToken(context.Context) (string, error)       { return "", nil }
+func (c *countingCI) DeleteRunner(context.Context, int64) error            { return nil }
+func (c *countingCI) RegistrationURL() string                              { return "https://github.com/test-org" }
+func (c *countingCI) ClassifyRunner(string) bool                           { return false }
+func (c *countingCI) ValidateWebhookPayload([]byte, string) error          { return nil }
+func (c *countingCI) ParseWebhookEvent(string, []byte) (*domain.WebhookEvent, error) {
+	return nil, nil
+}
+func (c *countingCI) ListRecentWorkflowRuns(context.Context, int) ([]domain.WorkflowMetrics, error) {
+	return nil, nil
+}
+func (c *countingCI) EnrichWorkflowMetrics(_ context.Context, runs []domain.WorkflowMetrics) ([]domain.WorkflowMetrics, error) {
+	return append([]domain.WorkflowMetrics(nil), runs...), nil
+}
+
 type failingCI struct{}
 
 func (failingCI) ListRunners(context.Context) ([]domain.Runner, error) {
@@ -214,6 +238,32 @@ func newTestDaemonWithRuntime(t *testing.T, ci any, runtime iface.ContainerRunti
 		nil,
 		log,
 	)
+}
+
+func TestGroupsForEvent_RoutesToMatchingRunnerClass(t *testing.T) {
+	d := &Daemon{groups: []RunnerGroup{
+		{ID: "typescript", MatchLabels: []string{"self-hosted", "typescript"}},
+		{ID: "rust", MatchLabels: []string{"self-hosted", "rust"}},
+	}}
+	event := &domain.WebhookEvent{Labels: []string{"self-hosted", "linux", "x64", "rust"}}
+
+	groups := d.groupsForEvent(event)
+	if len(groups) != 1 || groups[0].ID != "rust" {
+		t.Fatalf("expected rust group, got %+v", groups)
+	}
+}
+
+func TestGroupsForEvent_FallsBackToAllGroupsWhenNoLabelsMatch(t *testing.T) {
+	d := &Daemon{groups: []RunnerGroup{
+		{ID: "typescript", MatchLabels: []string{"typescript"}},
+		{ID: "rust", MatchLabels: []string{"rust"}},
+	}}
+	event := &domain.WebhookEvent{Labels: []string{"self-hosted", "linux", "x64"}}
+
+	groups := d.groupsForEvent(event)
+	if len(groups) != 2 {
+		t.Fatalf("expected fallback to both groups, got %+v", groups)
+	}
 }
 
 func waitForTriggerCount(t *testing.T, d *Daemon, want int) {
@@ -446,6 +496,134 @@ func TestDoReconcile_RerunsWhenTriggeredDuringAnActivePass(t *testing.T) {
 	}
 }
 
+func TestDoReconcile_RerunAfterTargetedTriggerReconcilesAllGroups(t *testing.T) {
+	rustCI := newBlockingCI()
+	typeScriptCI := &countingCI{}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	rustReconciler := engine.NewReconciler(
+		engine.ReconcilerConfig{
+			Prefix:         "rust-auto",
+			MaxAutoRunners: 0,
+			IdleTimeout:    time.Minute,
+			Labels:         "self-hosted,rust",
+			RunnerWorkDir:  "_work",
+		},
+		daemonTestRuntime{},
+		nil,
+		rustCI,
+		daemonTestState{},
+		log,
+	)
+	typeScriptReconciler := engine.NewReconciler(
+		engine.ReconcilerConfig{
+			Prefix:         "ts-auto",
+			MaxAutoRunners: 0,
+			IdleTimeout:    time.Minute,
+			Labels:         "self-hosted,typescript",
+			RunnerWorkDir:  "_work",
+		},
+		daemonTestRuntime{},
+		nil,
+		typeScriptCI,
+		daemonTestState{},
+		log,
+	)
+	d := NewWithRunnerGroups(
+		Config{PollInterval: time.Second},
+		[]RunnerGroup{
+			{ID: "rust", Prefix: "rust-auto", Reconciler: rustReconciler, CI: rustCI, Runtime: daemonTestRuntime{}},
+			{ID: "typescript", Prefix: "ts-auto", Reconciler: typeScriptReconciler, CI: typeScriptCI, Runtime: daemonTestRuntime{}},
+		},
+		nil,
+		nil,
+		log,
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		d.doReconcileGroups(ctx, []string{"rust"})
+	}()
+
+	select {
+	case <-rustCI.firstStarted:
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for first rust reconcile pass to start")
+	}
+
+	d.TriggerGroup("typescript")
+	close(rustCI.releaseFirst)
+	wg.Wait()
+
+	if got := rustCI.calls.Load(); got != 2 {
+		t.Fatalf("rust reconcile calls = %d, want 2", got)
+	}
+	if got := typeScriptCI.calls.Load(); got != 1 {
+		t.Fatalf("typescript reconcile calls = %d, want 1", got)
+	}
+}
+
+func TestDoReconcile_MergesBufferedTargetedTriggers(t *testing.T) {
+	rustCI := &countingCI{}
+	typeScriptCI := &countingCI{}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	rustReconciler := engine.NewReconciler(
+		engine.ReconcilerConfig{
+			Prefix:         "rust-auto",
+			MaxAutoRunners: 0,
+			IdleTimeout:    time.Minute,
+			Labels:         "self-hosted,rust",
+			RunnerWorkDir:  "_work",
+		},
+		daemonTestRuntime{},
+		nil,
+		rustCI,
+		daemonTestState{},
+		log,
+	)
+	typeScriptReconciler := engine.NewReconciler(
+		engine.ReconcilerConfig{
+			Prefix:         "ts-auto",
+			MaxAutoRunners: 0,
+			IdleTimeout:    time.Minute,
+			Labels:         "self-hosted,typescript",
+			RunnerWorkDir:  "_work",
+		},
+		daemonTestRuntime{},
+		nil,
+		typeScriptCI,
+		daemonTestState{},
+		log,
+	)
+	d := NewWithRunnerGroups(
+		Config{PollInterval: time.Second},
+		[]RunnerGroup{
+			{ID: "rust", Prefix: "rust-auto", Reconciler: rustReconciler, CI: rustCI, Runtime: daemonTestRuntime{}},
+			{ID: "typescript", Prefix: "ts-auto", Reconciler: typeScriptReconciler, CI: typeScriptCI, Runtime: daemonTestRuntime{}},
+		},
+		nil,
+		nil,
+		log,
+	)
+	d.triggerCh <- "typescript"
+
+	d.doReconcileGroups(context.Background(), []string{"rust"})
+
+	if got := rustCI.calls.Load(); got != 1 {
+		t.Fatalf("rust reconcile calls = %d, want 1", got)
+	}
+	if got := typeScriptCI.calls.Load(); got != 1 {
+		t.Fatalf("typescript reconcile calls = %d, want 1", got)
+	}
+	if got := len(d.triggerCh); got != 0 {
+		t.Fatalf("expected buffered trigger to be drained, got %d buffered signals", got)
+	}
+}
+
 func TestDoReconcile_DrainsRedundantQueuedTriggerBeforeReturn(t *testing.T) {
 	ci := newBlockingCI()
 	d := newTestDaemon(t, ci)
@@ -467,7 +645,7 @@ func TestDoReconcile_DrainsRedundantQueuedTriggerBeforeReturn(t *testing.T) {
 	}
 
 	d.Trigger()
-	d.triggerCh <- struct{}{}
+	d.triggerCh <- ""
 	close(ci.releaseFirst)
 	wg.Wait()
 

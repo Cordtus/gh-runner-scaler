@@ -6,7 +6,7 @@ prefix = "gh-runner-auto"
 max_auto_runners = 6
 idle_timeout = "300s"
 poll_interval = "30s"
-labels = "self-hosted,linux,x64"
+labels = "self-hosted,linux,x64,runner-class-axionic"
 runner_work_dir = "_work"
 
 [container]
@@ -66,6 +66,76 @@ org = "Axionic-Labs"
 
 [ci.github]
 # Webhook secret: set GH_WEBHOOK_SECRET env var
+
+# Optional multi-class router configuration.
+# If no [[runner_classes]] entries are present, the daemon synthesizes a single
+# "default" runner class from [scaler], [container], [cache], and [ci] above.
+# Add runner classes when one scaler process should manage multiple logical
+# runner types with different labels, templates, caps, or cache profiles.
+#
+# [cache_profiles.node]
+# enabled = true
+# pool = "pool9"
+# volume = "runner-cache-node"
+#
+# [cache_profiles.node.prune]
+# enabled = true
+# interval = "24h"
+# max_age = "336h"
+# temp_max_age = "6h"
+# paths = ["/cache/buildx"]
+#
+# [[cache_profiles.node.symlinks]]
+# source = "/cache/npm"
+# target = "/home/runner/.npm"
+#
+# [[cache_profiles.node.symlinks]]
+# source = "/cache/tool-cache"
+# target = "/opt/hostedtoolcache"
+#
+# [cache_profiles.rust]
+# enabled = true
+# pool = "pool9"
+# volume = "runner-cache-rust"
+#
+# [cache_profiles.rust.prune]
+# enabled = true
+# interval = "24h"
+# max_age = "336h"
+# temp_max_age = "6h"
+# paths = ["/cache/buildx"]
+#
+# [[cache_profiles.rust.symlinks]]
+# source = "/cache/cargo-registry"
+# target = "/home/runner/.cargo/registry"
+#
+# [[cache_profiles.rust.symlinks]]
+# source = "/cache/cargo-git"
+# target = "/home/runner/.cargo/git"
+#
+# [[runner_classes]]
+# id = "typescript-standard"
+# org = "ExampleOrg"
+# prefix = "ts-runner"
+# labels = "self-hosted,linux,x64,runner-class-typescript"
+# match_labels = ["self-hosted", "linux", "x64", "runner-class-typescript"]
+# max_auto_runners = 8
+# idle_timeout = "300s"
+# runner_work_dir = "_work"
+# template = "gh-runner-template-typescript"
+# cache_profile = "node"
+#
+# [[runner_classes]]
+# id = "rust-standard"
+# org = "ExampleOrg"
+# prefix = "rust-runner"
+# labels = "self-hosted,linux,x64,runner-class-rust"
+# match_labels = ["self-hosted", "linux", "x64", "runner-class-rust"]
+# max_auto_runners = 6
+# idle_timeout = "300s"
+# runner_work_dir = "_work"
+# template = "gh-runner-template-rust"
+# cache_profile = "rust"
 
 [webhook]
 enabled = true

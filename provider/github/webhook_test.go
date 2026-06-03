@@ -1,6 +1,7 @@
 package github
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/Cordtus/gh-runner-scaler/internal/domain"
@@ -72,6 +73,28 @@ func TestParseWorkflowJob_MissingLabelsStillParses(t *testing.T) {
 	}
 	if event.Detail != "queued: Acme/repo / quality" {
 		t.Fatalf("expected detail to survive missing labels, got %q", event.Detail)
+	}
+}
+
+func TestParseWorkflowJob_CapturesRunnerLabels(t *testing.T) {
+	payload := []byte(`{
+		"action":"queued",
+		"workflow_job":{
+			"name":"quality",
+			"labels":["self-hosted","linux","x64","rust"]
+		},
+		"repository":{
+			"full_name":"Acme/repo"
+		}
+	}`)
+
+	event, err := parseWorkflowJob(payload)
+	if err != nil {
+		t.Fatalf("parseWorkflowJob returned error: %v", err)
+	}
+	want := []string{"self-hosted", "linux", "x64", "rust"}
+	if got := event.Labels; !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected workflow job labels, got %v", got)
 	}
 }
 

@@ -15,13 +15,15 @@ import (
 
 // Config is the top-level configuration structure.
 type Config struct {
-	Scaler    ScalerConfig    `toml:"scaler"`
-	Container ContainerConfig `toml:"container"`
-	Cache     CacheConfig     `toml:"cache"`
-	CI        CIConfig        `toml:"ci"`
-	Webhook   WebhookConfig   `toml:"webhook"`
-	Metrics   MetricsConfig   `toml:"metrics"`
-	State     StateConfig     `toml:"state"`
+	Scaler        ScalerConfig           `toml:"scaler"`
+	Container     ContainerConfig        `toml:"container"`
+	Cache         CacheConfig            `toml:"cache"`
+	CacheProfiles map[string]CacheConfig `toml:"cache_profiles"`
+	CI            CIConfig               `toml:"ci"`
+	RunnerClasses []RunnerClassConfig    `toml:"runner_classes"`
+	Webhook       WebhookConfig          `toml:"webhook"`
+	Metrics       MetricsConfig          `toml:"metrics"`
+	State         StateConfig            `toml:"state"`
 }
 
 // ScalerConfig controls the core scaling behavior.
@@ -32,6 +34,36 @@ type ScalerConfig struct {
 	PollInterval   Duration `toml:"poll_interval"`
 	Labels         string   `toml:"labels"`
 	RunnerWorkDir  string   `toml:"runner_work_dir"`
+}
+
+// RunnerClassConfig describes one logical runner class managed by the router.
+// Empty fields inherit from the legacy top-level configuration so existing
+// single-class deployments keep working unchanged.
+type RunnerClassConfig struct {
+	ID             string   `toml:"id"`
+	Org            string   `toml:"org"`
+	Prefix         string   `toml:"prefix"`
+	MaxAutoRunners *int     `toml:"max_auto_runners"`
+	IdleTimeout    Duration `toml:"idle_timeout"`
+	Labels         string   `toml:"labels"`
+	MatchLabels    []string `toml:"match_labels"`
+	RunnerWorkDir  string   `toml:"runner_work_dir"`
+	Template       string   `toml:"template"`
+	CacheProfile   string   `toml:"cache_profile"`
+}
+
+// RunnerClass is a fully resolved runner class used by the composition root.
+type RunnerClass struct {
+	ID             string
+	Org            string
+	Prefix         string
+	MaxAutoRunners int
+	IdleTimeout    time.Duration
+	Labels         string
+	MatchLabels    []string
+	RunnerWorkDir  string
+	Template       string
+	Cache          CacheConfig
 }
 
 // ContainerConfig selects and configures the container runtime provider.
@@ -236,61 +268,46 @@ func validate(cfg *Config) error {
 	if cfg.CI.GitHub.Token == "" && cfg.CI.Provider == "github" {
 		return fmt.Errorf("GH_SCALER_GITHUB_TOKEN env var is required")
 	}
-	if cfg.Scaler.Prefix == "" {
-		return fmt.Errorf("scaler.prefix is required")
-	}
-	if cfg.Scaler.MaxAutoRunners < 0 {
-		return fmt.Errorf("scaler.max_auto_runners must be >= 0")
-	}
-	if cfg.Scaler.IdleTimeout.Duration <= 0 {
-		return fmt.Errorf("scaler.idle_timeout must be > 0")
+	if len(cfg.RunnerClasses) == 0 {
+		if cfg.Scaler.Prefix == "" {
+			return fmt.Errorf("scaler.prefix is required")
+		}
+		if cfg.Scaler.MaxAutoRunners < 0 {
+			return fmt.Errorf("scaler.max_auto_runners must be >= 0")
+		}
+		if cfg.Scaler.IdleTimeout.Duration <= 0 {
+			return fmt.Errorf("scaler.idle_timeout must be > 0")
+		}
 	}
 	if cfg.Scaler.PollInterval.Duration <= 0 {
 		return fmt.Errorf("scaler.poll_interval must be > 0")
 	}
-	if cfg.Container.Template == "" {
-		return fmt.Errorf("container.template is required")
-	}
 	if (cfg.Container.LXD.RemoteCert == "") != (cfg.Container.LXD.RemoteKey == "") {
 		return fmt.Errorf("container.lxd.remote_cert and remote_key must be set together")
 	}
-	if cfg.Cache.Enabled {
-		if cfg.Cache.Pool == "" {
-			return fmt.Errorf("cache.pool is required when cache is enabled")
+	if err := validateCache("cache", cfg.Cache); err != nil {
+		return err
+	}
+	for name, profile := range cfg.CacheProfiles {
+		if err := validateCache("cache_profiles."+name, profile); err != nil {
+			return err
 		}
-		if cfg.Cache.Volume == "" {
-			return fmt.Errorf("cache.volume is required when cache is enabled")
+	}
+	classes, err := cfg.RunnerClassConfigs()
+	if err != nil {
+		return err
+	}
+	seenIDs := make(map[string]struct{}, len(classes))
+	seenPrefixes := make(map[string]string, len(classes))
+	for _, class := range classes {
+		if _, exists := seenIDs[class.ID]; exists {
+			return fmt.Errorf("runner class id must be unique: %s", class.ID)
 		}
-		for _, sl := range cfg.Cache.Symlinks {
-			if !filepath.IsAbs(sl.Source) {
-				return fmt.Errorf("cache.symlinks source must be absolute: %s", sl.Source)
-			}
-			if !filepath.IsAbs(sl.Target) {
-				return fmt.Errorf("cache.symlinks target must be absolute: %s", sl.Target)
-			}
+		seenIDs[class.ID] = struct{}{}
+		if previous, exists := seenPrefixes[class.Prefix]; exists {
+			return fmt.Errorf("runner class prefix must be unique: %s used by %s and %s", class.Prefix, previous, class.ID)
 		}
-		if cfg.Cache.Prune.Enabled {
-			if cfg.Cache.Prune.Interval.Duration <= 0 {
-				return fmt.Errorf("cache.prune.interval must be > 0")
-			}
-			if cfg.Cache.Prune.MaxAge.Duration <= 0 {
-				return fmt.Errorf("cache.prune.max_age must be > 0")
-			}
-			if cfg.Cache.Prune.TempMaxAge.Duration <= 0 {
-				return fmt.Errorf("cache.prune.temp_max_age must be > 0")
-			}
-			for _, path := range cfg.Cache.Prune.Paths {
-				if !filepath.IsAbs(path) {
-					return fmt.Errorf("cache.prune.paths entries must be absolute: %s", path)
-				}
-				if filepath.Clean(path) != path {
-					return fmt.Errorf("cache.prune.paths entries must be clean paths: %s", path)
-				}
-				if !strings.HasPrefix(path, "/cache/") {
-					return fmt.Errorf("cache.prune.paths entries must be specific subdirectories under /cache: %s", path)
-				}
-			}
-		}
+		seenPrefixes[class.Prefix] = class.ID
 	}
 	if cfg.Webhook.Enabled && cfg.CI.GitHub.WebhookSecret == "" && cfg.CI.Provider == "github" {
 		return fmt.Errorf("GH_WEBHOOK_SECRET env var is required when webhook is enabled")
@@ -325,13 +342,164 @@ func validate(cfg *Config) error {
 	return nil
 }
 
+func validateCache(name string, cache CacheConfig) error {
+	if !cache.Enabled {
+		return nil
+	}
+	if cache.Pool == "" {
+		return fmt.Errorf("%s.pool is required when cache is enabled", name)
+	}
+	if cache.Volume == "" {
+		return fmt.Errorf("%s.volume is required when cache is enabled", name)
+	}
+	for _, sl := range cache.Symlinks {
+		if !filepath.IsAbs(sl.Source) {
+			return fmt.Errorf("%s.symlinks source must be absolute: %s", name, sl.Source)
+		}
+		if !filepath.IsAbs(sl.Target) {
+			return fmt.Errorf("%s.symlinks target must be absolute: %s", name, sl.Target)
+		}
+	}
+	if cache.Prune.Enabled {
+		if cache.Prune.Interval.Duration <= 0 {
+			return fmt.Errorf("%s.prune.interval must be > 0", name)
+		}
+		if cache.Prune.MaxAge.Duration <= 0 {
+			return fmt.Errorf("%s.prune.max_age must be > 0", name)
+		}
+		if cache.Prune.TempMaxAge.Duration <= 0 {
+			return fmt.Errorf("%s.prune.temp_max_age must be > 0", name)
+		}
+		for _, path := range cache.Prune.Paths {
+			if !filepath.IsAbs(path) {
+				return fmt.Errorf("%s.prune.paths entries must be absolute: %s", name, path)
+			}
+			if filepath.Clean(path) != path {
+				return fmt.Errorf("%s.prune.paths entries must be clean paths: %s", name, path)
+			}
+			if !strings.HasPrefix(path, "/cache/") {
+				return fmt.Errorf("%s.prune.paths entries must be specific subdirectories under /cache: %s", name, path)
+			}
+		}
+	}
+	return nil
+}
+
 // CachePrunePolicy returns the provider-neutral shared-cache cleanup settings.
 func (cfg *Config) CachePrunePolicy() domain.CachePrunePolicy {
-	return domain.CachePrunePolicy{
-		Enabled:    cfg.Cache.Enabled && cfg.Cache.Prune.Enabled,
-		Interval:   cfg.Cache.Prune.Interval.Duration,
-		MaxAge:     cfg.Cache.Prune.MaxAge.Duration,
-		TempMaxAge: cfg.Cache.Prune.TempMaxAge.Duration,
-		Paths:      append([]string(nil), cfg.Cache.Prune.Paths...),
+	return cachePrunePolicy(cfg.Cache)
+}
+
+// RunnerClassConfigs returns the resolved runner classes. With no
+// [[runner_classes]] entries, it synthesizes one legacy-compatible class.
+func (cfg *Config) RunnerClassConfigs() ([]RunnerClass, error) {
+	if len(cfg.RunnerClasses) == 0 {
+		if cfg.Container.Template == "" {
+			return nil, fmt.Errorf("container.template is required")
+		}
+		return []RunnerClass{{
+			ID:             "default",
+			Org:            cfg.CI.Org,
+			Prefix:         cfg.Scaler.Prefix,
+			MaxAutoRunners: cfg.Scaler.MaxAutoRunners,
+			IdleTimeout:    cfg.Scaler.IdleTimeout.Duration,
+			Labels:         cfg.Scaler.Labels,
+			MatchLabels:    labelsList(cfg.Scaler.Labels),
+			RunnerWorkDir:  cfg.Scaler.RunnerWorkDir,
+			Template:       cfg.Container.Template,
+			Cache:          cfg.Cache,
+		}}, nil
 	}
+
+	classes := make([]RunnerClass, 0, len(cfg.RunnerClasses))
+	for _, raw := range cfg.RunnerClasses {
+		class := RunnerClass{
+			ID:             strings.TrimSpace(raw.ID),
+			Org:            firstNonEmpty(raw.Org, cfg.CI.Org),
+			Prefix:         firstNonEmpty(raw.Prefix, cfg.Scaler.Prefix),
+			MaxAutoRunners: cfg.Scaler.MaxAutoRunners,
+			IdleTimeout:    cfg.Scaler.IdleTimeout.Duration,
+			Labels:         firstNonEmpty(raw.Labels, cfg.Scaler.Labels),
+			MatchLabels:    cleanLabels(raw.MatchLabels),
+			RunnerWorkDir:  firstNonEmpty(raw.RunnerWorkDir, cfg.Scaler.RunnerWorkDir),
+			Template:       firstNonEmpty(raw.Template, cfg.Container.Template),
+			Cache:          cfg.Cache,
+		}
+		if raw.MaxAutoRunners != nil {
+			class.MaxAutoRunners = *raw.MaxAutoRunners
+		}
+		if raw.IdleTimeout.Duration > 0 {
+			class.IdleTimeout = raw.IdleTimeout.Duration
+		}
+		if raw.CacheProfile != "" {
+			profile, ok := cfg.CacheProfiles[raw.CacheProfile]
+			if !ok {
+				return nil, fmt.Errorf("runner class %s references unknown cache profile %q", class.ID, raw.CacheProfile)
+			}
+			class.Cache = profile
+		}
+		if len(class.MatchLabels) == 0 {
+			class.MatchLabels = labelsList(class.Labels)
+		}
+		if class.ID == "" {
+			return nil, fmt.Errorf("runner class id is required")
+		}
+		if class.Org == "" {
+			return nil, fmt.Errorf("runner class %s org is required", class.ID)
+		}
+		if class.Prefix == "" {
+			return nil, fmt.Errorf("runner class %s prefix is required", class.ID)
+		}
+		if class.MaxAutoRunners < 0 {
+			return nil, fmt.Errorf("runner class %s max_auto_runners must be >= 0", class.ID)
+		}
+		if class.IdleTimeout <= 0 {
+			return nil, fmt.Errorf("runner class %s idle_timeout must be > 0", class.ID)
+		}
+		if class.Template == "" {
+			return nil, fmt.Errorf("runner class %s template is required", class.ID)
+		}
+		classes = append(classes, class)
+	}
+	return classes, nil
+}
+
+// CachePrunePolicyFor returns the provider-neutral cleanup settings for a resolved class.
+func CachePrunePolicyFor(cache CacheConfig) domain.CachePrunePolicy {
+	return cachePrunePolicy(cache)
+}
+
+func cachePrunePolicy(cache CacheConfig) domain.CachePrunePolicy {
+	return domain.CachePrunePolicy{
+		Enabled:    cache.Enabled && cache.Prune.Enabled,
+		Interval:   cache.Prune.Interval.Duration,
+		MaxAge:     cache.Prune.MaxAge.Duration,
+		TempMaxAge: cache.Prune.TempMaxAge.Duration,
+		Paths:      append([]string(nil), cache.Prune.Paths...),
+	}
+}
+
+func labelsList(labels string) []string {
+	parts := strings.Split(labels, ",")
+	return cleanLabels(parts)
+}
+
+func cleanLabels(labels []string) []string {
+	result := make([]string, 0, len(labels))
+	for _, label := range labels {
+		label = strings.TrimSpace(label)
+		if label != "" {
+			result = append(result, label)
+		}
+	}
+	return result
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }

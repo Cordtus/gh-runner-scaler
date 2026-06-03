@@ -327,6 +327,71 @@ func TestCollectAndPush_DeduplicatesRepeatedWorkflowMetrics(t *testing.T) {
 	}
 }
 
+func TestCollectAndPush_CollectsWorkflowMetricsForEachRunnerGroup(t *testing.T) {
+	typeScriptRun := domain.WorkflowMetrics{
+		RunID:      101,
+		RunAttempt: 1,
+		Repo:       "Acme/typescript",
+		Workflow:   "build",
+		Conclusion: "success",
+		DurationS:  30,
+		RunNumber:  7,
+		Event:      "push",
+		Branch:     "main",
+	}
+	rustRun := domain.WorkflowMetrics{
+		RunID:      202,
+		RunAttempt: 1,
+		Repo:       "Acme/rust",
+		Workflow:   "test",
+		Conclusion: "failure",
+		DurationS:  45,
+		RunNumber:  8,
+		Event:      "pull_request",
+		Branch:     "dev",
+	}
+
+	typeScriptCI := &collectMetricsTestCI{
+		metricsTestCI: metricsTestCI{prefix: "ts-auto"},
+		workflowRunsBatches: [][]domain.WorkflowMetrics{
+			{typeScriptRun},
+		},
+	}
+	rustCI := &collectMetricsTestCI{
+		metricsTestCI: metricsTestCI{prefix: "rust-auto"},
+		workflowRunsBatches: [][]domain.WorkflowMetrics{
+			{rustRun},
+		},
+	}
+	typeScriptBackend := &metricsRecorder{}
+	rustBackend := &metricsRecorder{}
+	daemon := NewWithRunnerGroups(
+		Config{CollectWorkflows: true},
+		[]RunnerGroup{
+			{ID: "typescript", Prefix: "ts-auto", CI: typeScriptCI, Metrics: typeScriptBackend},
+			{ID: "rust", Prefix: "rust-auto", CI: rustCI, Metrics: rustBackend},
+		},
+		nil,
+		nil,
+		testLogger(),
+	)
+
+	daemon.collectAndPush(context.Background())
+
+	if len(typeScriptBackend.workflowBatches) != 1 {
+		t.Fatalf("typescript workflow batch count = %d, want 1", len(typeScriptBackend.workflowBatches))
+	}
+	if len(typeScriptBackend.workflowBatches[0]) != 1 || typeScriptBackend.workflowBatches[0][0] != typeScriptRun {
+		t.Fatalf("typescript workflow batch = %+v, want [%+v]", typeScriptBackend.workflowBatches[0], typeScriptRun)
+	}
+	if len(rustBackend.workflowBatches) != 1 {
+		t.Fatalf("rust workflow batch count = %d, want 1", len(rustBackend.workflowBatches))
+	}
+	if len(rustBackend.workflowBatches[0]) != 1 || rustBackend.workflowBatches[0][0] != rustRun {
+		t.Fatalf("rust workflow batch = %+v, want [%+v]", rustBackend.workflowBatches[0], rustRun)
+	}
+}
+
 func TestCollectAndPush_PersistsWorkflowDedupeAcrossDaemonRestart(t *testing.T) {
 	stateDir := t.TempDir()
 	run := domain.WorkflowMetrics{
@@ -591,6 +656,83 @@ func TestCollectAndPush_ReusesContainerSnapshotAcrossRunnerAndHostMetrics(t *tes
 	}
 	if got := *backend.hostBatches[0].RunnerContainersStopped; got != 1 {
 		t.Fatalf("runner containers stopped = %d, want 1", got)
+	}
+}
+
+func TestCollectAndPush_PushesRunnerAndHostMetricsForEachRunnerGroup(t *testing.T) {
+	typeScriptCI := &collectMetricsTestCI{
+		metricsTestCI: metricsTestCI{prefix: "ts-auto"},
+		runners: []domain.Runner{
+			{ID: 1, Name: "ts-auto-1", Status: "online", Busy: false},
+		},
+	}
+	rustCI := &collectMetricsTestCI{
+		metricsTestCI: metricsTestCI{prefix: "rust-auto"},
+		runners: []domain.Runner{
+			{ID: 2, Name: "rust-auto-1", Status: "online", Busy: true},
+		},
+	}
+	typeScriptRuntime := &metricsTestRuntime{
+		hostMetrics: domain.HostMetrics{ContainersRunning: 4},
+		containers: []domain.Container{
+			{Name: "ts-auto-1", Status: domain.StatusRunning},
+			{Name: "ts-auto-2", Status: domain.StatusStopped},
+			{Name: "other", Status: domain.StatusRunning},
+		},
+	}
+	rustRuntime := &metricsTestRuntime{
+		hostMetrics: domain.HostMetrics{ContainersRunning: 3},
+		containers: []domain.Container{
+			{Name: "rust-auto-1", Status: domain.StatusRunning},
+			{Name: "rust-auto-2", Status: domain.StatusRunning},
+			{Name: "other", Status: domain.StatusRunning},
+		},
+	}
+
+	backend := &metricsRecorder{}
+	daemon := NewWithRunnerGroups(
+		Config{CollectHost: true},
+		[]RunnerGroup{
+			{ID: "typescript", Prefix: "ts-auto", CachePool: "pool-ts", CI: typeScriptCI, Runtime: typeScriptRuntime},
+			{ID: "rust", Prefix: "rust-auto", CachePool: "pool-rust", CI: rustCI, Runtime: rustRuntime},
+		},
+		backend,
+		nil,
+		testLogger(),
+	)
+
+	daemon.collectAndPush(context.Background())
+
+	if len(backend.runnerBatches) != 2 {
+		t.Fatalf("runner batch count = %d, want 2", len(backend.runnerBatches))
+	}
+	if backend.runnerBatches[0].GroupID != "typescript" || backend.runnerBatches[1].GroupID != "rust" {
+		t.Fatalf("runner group ids = %q, %q; want typescript, rust", backend.runnerBatches[0].GroupID, backend.runnerBatches[1].GroupID)
+	}
+	if got := backend.runnerBatches[0].ProvisioningRunners; got != 0 {
+		t.Fatalf("typescript provisioning runners = %d, want 0", got)
+	}
+	if got := backend.runnerBatches[1].BusyRunners; got != 1 {
+		t.Fatalf("rust busy runners = %d, want 1", got)
+	}
+	if got := backend.runnerBatches[1].ProvisioningRunners; got != 1 {
+		t.Fatalf("rust provisioning runners = %d, want 1", got)
+	}
+
+	if len(backend.hostBatches) != 2 {
+		t.Fatalf("host batch count = %d, want 2", len(backend.hostBatches))
+	}
+	if backend.hostBatches[0].GroupID != "typescript" || backend.hostBatches[1].GroupID != "rust" {
+		t.Fatalf("host group ids = %q, %q; want typescript, rust", backend.hostBatches[0].GroupID, backend.hostBatches[1].GroupID)
+	}
+	if got := *backend.hostBatches[0].RunnerContainersRunning; got != 1 {
+		t.Fatalf("typescript running containers = %d, want 1", got)
+	}
+	if got := *backend.hostBatches[0].RunnerContainersStopped; got != 1 {
+		t.Fatalf("typescript stopped containers = %d, want 1", got)
+	}
+	if got := *backend.hostBatches[1].RunnerContainersRunning; got != 2 {
+		t.Fatalf("rust running containers = %d, want 2", got)
 	}
 }
 
