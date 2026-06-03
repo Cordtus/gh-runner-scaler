@@ -330,7 +330,7 @@ func TestNoScaleUp_WhenIdleRunnerExists(t *testing.T) {
 	runtime := newMockRuntime()
 	ci := &mockCI{
 		runners: []domain.Runner{
-			{ID: 1, Name: "permanent", Busy: false, Status: "online"},
+			{ID: 1, Name: "permanent", Busy: false, Status: "online", Labels: []string{"self-hosted"}},
 		},
 		regToken: "test-token",
 		prefix:   "auto",
@@ -347,6 +347,36 @@ func TestNoScaleUp_WhenIdleRunnerExists(t *testing.T) {
 	defer runtime.mu.Unlock()
 	if len(runtime.containers) > 0 {
 		t.Error("should not have created any containers when idle runner exists")
+	}
+}
+
+func TestScaleUp_WhenOnlyOtherClassHasIdleRunner(t *testing.T) {
+	runtime := newMockRuntime()
+	ci := &mockCI{
+		runners: []domain.Runner{
+			{
+				ID:     1,
+				Name:   "other-1",
+				Busy:   false,
+				Status: "online",
+				Labels: []string{"self-hosted", "linux", "x64", "runner-class-other"},
+			},
+		},
+		regToken: "test-token",
+		prefix:   "auto",
+	}
+	state := newMockState()
+	r := newTestReconciler(runtime, ci, state, nil)
+	r.cfg.Labels = "self-hosted,linux,x64,runner-class-target"
+
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if _, ok := runtime.containers["auto-1"]; !ok {
+		t.Fatal("expected scale-up when only a different runner class is idle")
 	}
 }
 
@@ -411,7 +441,7 @@ func TestScaleDown_StoppedContainer(t *testing.T) {
 	ci := &mockCI{
 		runners: []domain.Runner{
 			{ID: 1, Name: "auto-1", Busy: false, Status: "offline"},
-			{ID: 2, Name: "permanent", Busy: false, Status: "online"},
+			{ID: 2, Name: "permanent", Busy: false, Status: "online", Labels: []string{"self-hosted"}},
 		},
 		removeToken: "remove-token",
 		prefix:      "auto",
@@ -553,8 +583,8 @@ func TestReconcile_RefreshesListedStoppedContainerBeforeDeletingIt(t *testing.T)
 
 	ci := &mockCI{
 		runners: []domain.Runner{
-			{ID: 1, Name: "auto-1", Busy: false, Status: "online"},
-			{ID: 2, Name: "permanent", Busy: false, Status: "online"},
+			{ID: 1, Name: "auto-1", Busy: false, Status: "online", Labels: []string{"self-hosted"}},
+			{ID: 2, Name: "permanent", Busy: false, Status: "online", Labels: []string{"self-hosted"}},
 		},
 		removeToken: "remove-token",
 		prefix:      "auto",
@@ -582,7 +612,7 @@ func TestScaleDown_IdleTimeout(t *testing.T) {
 	runtime.containers["auto-1"] = domain.StatusRunning
 
 	ci := &mockCI{
-		runners:     []domain.Runner{{ID: 1, Name: "auto-1", Busy: false, Status: "online"}},
+		runners:     []domain.Runner{{ID: 1, Name: "auto-1", Busy: false, Status: "online", Labels: []string{"self-hosted"}}},
 		removeToken: "remove-token",
 		prefix:      "auto",
 	}
@@ -697,7 +727,7 @@ func TestScaleDown_OrphanedContainer(t *testing.T) {
 
 	ci := &mockCI{
 		// No runners match auto-1 -- it's orphaned.
-		runners:     []domain.Runner{{ID: 1, Name: "permanent", Busy: false, Status: "online"}},
+		runners:     []domain.Runner{{ID: 1, Name: "permanent", Busy: false, Status: "online", Labels: []string{"self-hosted"}}},
 		removeToken: "remove-token",
 		prefix:      "auto",
 	}
@@ -863,5 +893,20 @@ func TestBuildSnapshot(t *testing.T) {
 	}
 	if snap.Permanent != 1 {
 		t.Errorf("permanent: got %d, want 1", snap.Permanent)
+	}
+}
+
+func TestAvailableRunnerCountForLabels(t *testing.T) {
+	runners := []domain.Runner{
+		{Name: "target", Status: "online", Busy: false, Labels: []string{"self-hosted", "linux", "runner-class-target"}},
+		{Name: "other", Status: "online", Busy: false, Labels: []string{"self-hosted", "linux", "runner-class-other"}},
+		{Name: "unlabeled", Status: "online", Busy: false},
+		{Name: "busy-target", Status: "online", Busy: true, Labels: []string{"self-hosted", "linux", "runner-class-target"}},
+		{Name: "offline-target", Status: "offline", Busy: false, Labels: []string{"self-hosted", "linux", "runner-class-target"}},
+	}
+
+	got := AvailableRunnerCountForLabels(runners, "self-hosted,linux,runner-class-target")
+	if got != 1 {
+		t.Fatalf("AvailableRunnerCountForLabels = %d, want 1", got)
 	}
 }

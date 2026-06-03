@@ -3,10 +3,12 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -62,7 +64,7 @@ func TestListRunners_PaginatesAcrossAllPages(t *testing.T) {
 	}
 }
 
-func TestListRunners_DoesNotReuseFreshCache(t *testing.T) {
+func TestListRunners_ReusesFreshCache(t *testing.T) {
 	var calls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/orgs/test-org/actions/runners" {
@@ -93,11 +95,67 @@ func TestListRunners_DoesNotReuseFreshCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second ListRunners returned error: %v", err)
 	}
-	if calls != 2 {
-		t.Fatalf("runner API calls = %d, want 2", calls)
+	if calls != 1 {
+		t.Fatalf("runner API calls = %d, want 1", calls)
 	}
 	if len(first) != 1 || len(second) != 1 || first[0].Name != second[0].Name {
 		t.Fatalf("unexpected runners: first=%+v second=%+v", first, second)
+	}
+}
+
+func TestListRunners_SharedCacheAnnotatesPerProviderPrefix(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/orgs/test-org/actions/runners" {
+			http.NotFound(w, r)
+			return
+		}
+		calls++
+		writeJSON(t, w, map[string]any{
+			"total_count": 2,
+			"runners": []map[string]any{
+				{
+					"id":     1,
+					"name":   "auto-a-1",
+					"status": "online",
+					"busy":   false,
+					"labels": []map[string]any{},
+				},
+				{
+					"id":     2,
+					"name":   "auto-b-1",
+					"status": "online",
+					"busy":   false,
+					"labels": []map[string]any{},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	firstProvider := testProviderWithPrefix(t, server, "auto-a")
+	secondProvider := testProviderWithPrefix(t, server, "auto-b")
+	firstProvider.SetRunnerCacheTTL(time.Minute)
+	secondProvider.SetRunnerCacheTTL(time.Minute)
+	secondProvider.ShareRunnerCacheWith(firstProvider)
+
+	first, err := firstProvider.ListRunners(context.Background())
+	if err != nil {
+		t.Fatalf("first ListRunners returned error: %v", err)
+	}
+	second, err := secondProvider.ListRunners(context.Background())
+	if err != nil {
+		t.Fatalf("second ListRunners returned error: %v", err)
+	}
+
+	if calls != 1 {
+		t.Fatalf("runner API calls = %d, want 1", calls)
+	}
+	if !first[0].IsAuto || first[1].IsAuto {
+		t.Fatalf("first provider auto flags = [%v %v], want [true false]", first[0].IsAuto, first[1].IsAuto)
+	}
+	if second[0].IsAuto || !second[1].IsAuto {
+		t.Fatalf("second provider auto flags = [%v %v], want [false true]", second[0].IsAuto, second[1].IsAuto)
 	}
 }
 
@@ -192,6 +250,297 @@ func TestListRunnersForMetrics_UsesStaleCacheOnFailure(t *testing.T) {
 
 	if _, err := provider.ListRunners(context.Background()); err == nil {
 		t.Fatal("ListRunners returned nil error after cache expiry, want API failure")
+	}
+}
+
+func TestRunnerTokens_AreCachedUntilNearExpiry(t *testing.T) {
+	var registrationCalls int
+	var removeCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/orgs/test-org/actions/runners/registration-token":
+			registrationCalls++
+			writeJSON(t, w, map[string]any{
+				"token":      "registration-token",
+				"expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano),
+			})
+		case "/orgs/test-org/actions/runners/remove-token":
+			removeCalls++
+			writeJSON(t, w, map[string]any{
+				"token":      "remove-token",
+				"expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano),
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	provider := testProvider(t, server)
+	for i := 0; i < 2; i++ {
+		registrationToken, err := provider.GetRegistrationToken(context.Background())
+		if err != nil {
+			t.Fatalf("GetRegistrationToken returned error: %v", err)
+		}
+		if registrationToken != "registration-token" {
+			t.Fatalf("registration token = %q, want registration-token", registrationToken)
+		}
+
+		removeToken, err := provider.GetRemoveToken(context.Background())
+		if err != nil {
+			t.Fatalf("GetRemoveToken returned error: %v", err)
+		}
+		if removeToken != "remove-token" {
+			t.Fatalf("remove token = %q, want remove-token", removeToken)
+		}
+	}
+
+	if registrationCalls != 1 {
+		t.Fatalf("registration token API calls = %d, want 1", registrationCalls)
+	}
+	if removeCalls != 1 {
+		t.Fatalf("remove token API calls = %d, want 1", removeCalls)
+	}
+}
+
+func TestRegistrationToken_InvalidatesRunnerCacheForReconcileAfterMetricsInterleaving(t *testing.T) {
+	registered := false
+	runnerCalls := 0
+	tokenCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/orgs/test-org/actions/runners":
+			runnerCalls++
+			runners := []map[string]any{}
+			if registered {
+				runners = append(runners, map[string]any{
+					"id":     1,
+					"name":   "auto-1",
+					"status": "online",
+					"busy":   false,
+					"labels": []map[string]any{},
+				})
+			}
+			writeJSON(t, w, map[string]any{
+				"total_count": len(runners),
+				"runners":     runners,
+			})
+		case "/orgs/test-org/actions/runners/registration-token":
+			tokenCalls++
+			writeJSON(t, w, map[string]any{
+				"token":      "registration-token",
+				"expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano),
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	provider := testProvider(t, server)
+	provider.SetRunnerCacheTTL(time.Minute)
+
+	runners, err := provider.ListRunners(context.Background())
+	if err != nil {
+		t.Fatalf("ListRunners returned error: %v", err)
+	}
+	if len(runners) != 0 {
+		t.Fatalf("initial runners = %+v, want empty", runners)
+	}
+	if _, err := provider.GetRegistrationToken(context.Background()); err != nil {
+		t.Fatalf("GetRegistrationToken returned error: %v", err)
+	}
+	metricsRunners, _, err := provider.ListRunnersForMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("ListRunnersForMetrics during registration returned error: %v", err)
+	}
+	if len(metricsRunners) != 0 {
+		t.Fatalf("metrics runners during registration = %+v, want empty", metricsRunners)
+	}
+	registered = true
+	runners, err = provider.ListRunners(context.Background())
+	if err != nil {
+		t.Fatalf("ListRunners after token returned error: %v", err)
+	}
+
+	if runnerCalls != 3 {
+		t.Fatalf("runner API calls = %d, want 3 after bypassing metrics-populated stale cache", runnerCalls)
+	}
+	if tokenCalls != 1 {
+		t.Fatalf("token API calls = %d, want 1", tokenCalls)
+	}
+	if len(runners) != 1 || runners[0].Name != "auto-1" {
+		t.Fatalf("runners after token = %+v, want auto-1", runners)
+	}
+}
+
+func TestResumeRunnerInventoryCache_IgnoresInFlightMetricsFetchFromSuspendedGeneration(t *testing.T) {
+	var mu sync.Mutex
+	registered := false
+	runnerCalls := 0
+	metricsFetchStarted := make(chan struct{})
+	releaseMetricsFetch := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/orgs/test-org/actions/runners" {
+			http.NotFound(w, r)
+			return
+		}
+
+		mu.Lock()
+		runnerCalls++
+		call := runnerCalls
+		hasRegistered := registered
+		mu.Unlock()
+
+		if call == 1 {
+			close(metricsFetchStarted)
+			<-releaseMetricsFetch
+		}
+
+		runners := []map[string]any{}
+		if hasRegistered {
+			runners = append(runners, map[string]any{
+				"id":     1,
+				"name":   "auto-1",
+				"status": "online",
+				"busy":   false,
+				"labels": []map[string]any{},
+			})
+		}
+		writeJSON(t, w, map[string]any{
+			"total_count": len(runners),
+			"runners":     runners,
+		})
+	}))
+	defer server.Close()
+
+	provider := testProvider(t, server)
+	provider.SetRunnerCacheTTL(time.Minute)
+	provider.SuspendRunnerInventoryCache()
+
+	errCh := make(chan error, 1)
+	go func() {
+		runners, _, err := provider.ListRunnersForMetrics(context.Background())
+		if err != nil {
+			errCh <- err
+			return
+		}
+		if len(runners) != 0 {
+			errCh <- fmt.Errorf("metrics runners = %+v, want empty", runners)
+			return
+		}
+		errCh <- nil
+	}()
+
+	<-metricsFetchStarted
+	provider.ResumeRunnerInventoryCache()
+	mu.Lock()
+	registered = true
+	mu.Unlock()
+	close(releaseMetricsFetch)
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+
+	runners, err := provider.ListRunners(context.Background())
+	if err != nil {
+		t.Fatalf("ListRunners after resume returned error: %v", err)
+	}
+	if len(runners) != 1 || runners[0].Name != "auto-1" {
+		t.Fatalf("runners after resume = %+v, want auto-1", runners)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if runnerCalls != 2 {
+		t.Fatalf("runner API calls = %d, want 2 because stale in-flight metrics fetch must not populate cache", runnerCalls)
+	}
+}
+
+func TestRunnerTokens_RefreshNearExpiryAndMissingExpiry(t *testing.T) {
+	tokenValues := []map[string]any{
+		{
+			"token":      "near-expiry",
+			"expires_at": time.Now().Add(defaultTokenRefreshPadding - time.Second).UTC().Format(time.RFC3339Nano),
+		},
+		{
+			"token": "missing-expiry",
+		},
+		{
+			"token":      "fresh",
+			"expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano),
+		},
+	}
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/orgs/test-org/actions/runners/registration-token" {
+			http.NotFound(w, r)
+			return
+		}
+		if calls >= len(tokenValues) {
+			t.Fatalf("unexpected extra token request %d", calls+1)
+		}
+		writeJSON(t, w, tokenValues[calls])
+		calls++
+	}))
+	defer server.Close()
+
+	provider := testProvider(t, server)
+	want := []string{"near-expiry", "missing-expiry", "fresh", "fresh"}
+	for _, expected := range want {
+		token, err := provider.GetRegistrationToken(context.Background())
+		if err != nil {
+			t.Fatalf("GetRegistrationToken returned error: %v", err)
+		}
+		if token != expected {
+			t.Fatalf("token = %q, want %q", token, expected)
+		}
+	}
+	if calls != 3 {
+		t.Fatalf("token API calls = %d, want 3", calls)
+	}
+}
+
+func TestRunnerTokens_CoalesceConcurrentMisses(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/orgs/test-org/actions/runners/registration-token" {
+			http.NotFound(w, r)
+			return
+		}
+		calls++
+		time.Sleep(10 * time.Millisecond)
+		writeJSON(t, w, map[string]any{
+			"token":      "registration-token",
+			"expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano),
+		})
+	}))
+	defer server.Close()
+
+	provider := testProvider(t, server)
+	var wg sync.WaitGroup
+	errs := make(chan error, 10)
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			token, err := provider.GetRegistrationToken(context.Background())
+			if err != nil {
+				errs <- err
+				return
+			}
+			if token != "registration-token" {
+				errs <- fmt.Errorf("token = %q, want registration-token", token)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("registration token API calls = %d, want 1", calls)
 	}
 }
 
@@ -452,6 +801,11 @@ func TestEnrichWorkflowMetrics_PreservesRunOnWorkflowJobsError(t *testing.T) {
 
 func testProvider(t *testing.T, server *httptest.Server) *Provider {
 	t.Helper()
+	return testProviderWithPrefix(t, server, "auto")
+}
+
+func testProviderWithPrefix(t *testing.T, server *httptest.Server, prefix string) *Provider {
+	t.Helper()
 
 	baseURL, err := url.Parse(server.URL + "/")
 	if err != nil {
@@ -460,7 +814,7 @@ func testProvider(t *testing.T, server *httptest.Server) *Provider {
 
 	client := gh.NewClient(server.Client()).WithAuthToken("token")
 	client.BaseURL = baseURL
-	return newProvider(client, "test-org", "auto")
+	return newProvider(client, "test-org", prefix)
 }
 
 func writeJSON(t *testing.T, w http.ResponseWriter, payload any) {

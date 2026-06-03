@@ -192,7 +192,9 @@ The scaler uses the GitHub Actions API for platform state that the runner host c
 - Organization registration/removal token APIs: short-lived tokens for registering new ephemeral runners and removing completed ones.
 - Workflow run/job APIs: optional completed-workflow metrics and failure enrichment for the Grafana dashboard.
 
-Fresh reconcile passes always read runner inventory from GitHub before making scale-up/scale-down decisions. Successful reconcile reads are cached briefly so the metrics loop does not immediately duplicate the same API call. Metrics may reuse a bounded stale runner snapshot during transient GitHub API or rate-limit failures, and the metrics payload marks `runner_inventory_stale`, `runner_inventory_age_s`, `runner_inventory_at`, and `runner_inventory_error` so the dashboard can distinguish stale capacity data from live GitHub state.
+Reconcile, metrics, and runner-class providers for the same org share a very short runner-inventory cache. That collapses webhook bursts, immediate metrics collection, and multi-class reconcile passes into a single `GET /orgs/<org>/actions/runners` request when they happen within the same few seconds, while regular poll intervals still refresh from GitHub before making scale-up/scale-down decisions. During runner registration or removal, reconcile cache hits are suspended and mutation-period snapshots are cleared so lifecycle decisions do not use inventory fetched before GitHub has caught up. Metrics may reuse a bounded stale runner snapshot during transient GitHub API or rate-limit failures, and the metrics payload marks `runner_inventory_stale`, `runner_inventory_age_s`, `runner_inventory_at`, and `runner_inventory_error` so the dashboard can distinguish stale capacity data from live GitHub state.
+
+Registration and removal tokens are also cached until close to their GitHub-provided `expires_at` time. This avoids repeated token POSTs during adjacent scale-ups or scale-downs; each runner still receives the same valid short-lived token through the normal `config.sh` flow.
 
 Because the runners are created and removed over and over during regular operation, GitHub's runner/audit logs will contain significant and unavoidable noise related to this.
 
@@ -474,6 +476,8 @@ When metrics are enabled, the daemon also derives two additional observability s
 - `issue-events`: warning/error events from the scaler itself for issue-count panels
 
 Workflow metrics are collected in two phases to control GitHub API use. The provider first lists recent completed workflow runs without job/step detail, filters out runs already delivered to Loki, and only then enriches fresh failed runs with failed job, failed step, and failure reason. The org repository list is cached for 10 minutes, and `workflow_repo_batch_size` rotates through repos across collection intervals. With the default `25`, a large org is scanned in bounded chunks instead of every metrics tick.
+
+For lower GitHub API load, keep the webhook enabled so the poll loop can remain a safety net, keep `[metrics].interval` at or above the default `60s`, leave `workflow_repo_batch_size` bounded for large orgs, and disable `collect_workflows` if dashboard workflow history is not needed.
 
 With `[[runner_classes]]`, runner and host metric streams include a `group_id` Loki label and JSON field so class-specific panels can filter or split the pool.
 

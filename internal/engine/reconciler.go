@@ -80,7 +80,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 
 	// 2. Build snapshot.
 	snap := buildSnapshot(runners, r.cfg.Prefix)
-	availableOnline := AvailableRunnerCount(runners)
+	availableOnline := AvailableRunnerCountForLabels(runners, r.cfg.Labels)
 	r.log.Info("runner state",
 		"event_type", "runner_state",
 		"total", snap.Total, "busy", snap.Busy, "idle", snap.Idle,
@@ -171,10 +171,13 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 // Preserves the full bash scaler sequence: clone -> cache attach -> start ->
 // wait ready -> symlinks -> config.sh --ephemeral -> svc.sh install+start -> track state.
 func (r *Reconciler) scaleUp(ctx context.Context, existing []domain.Container) error {
+	r.suspendRunnerInventoryCache()
 	token, err := r.ci.GetRegistrationToken(ctx)
 	if err != nil {
+		r.resumeRunnerInventoryCache()
 		return fmt.Errorf("getting registration token: %w", err)
 	}
+	defer r.resumeRunnerInventoryCache()
 
 	name, err := r.cloneWithFreshName(ctx, existing)
 	if err != nil {
@@ -273,6 +276,9 @@ func (r *Reconciler) cloneWithFreshName(ctx context.Context, existing []domain.C
 
 // scaleDown tears down a container with belt-and-suspenders deregistration.
 func (r *Reconciler) scaleDown(ctx context.Context, name string, runners []domain.Runner, pass *reconcilePass) scaleDownResult {
+	r.suspendRunnerInventoryCache()
+	defer r.resumeRunnerInventoryCache()
+
 	r.log.Info("scaling down", "event_type", "scale_down", "action", "started", "container", name, "runner", name)
 	var errs []error
 	result := scaleDownResult{}
@@ -444,6 +450,71 @@ func AvailableRunnerCount(runners []domain.Runner) int {
 		}
 	}
 	return count
+}
+
+// AvailableRunnerCountForLabels returns online idle runners matching all configured labels.
+func AvailableRunnerCountForLabels(runners []domain.Runner, labels string) int {
+	required := labelsSet(labels)
+	count := 0
+	for _, r := range runners {
+		if r.Status == "online" && !r.Busy && runnerHasLabels(r, required) {
+			count++
+		}
+	}
+	return count
+}
+
+func runnerHasLabels(runner domain.Runner, required map[string]struct{}) bool {
+	if len(required) == 0 {
+		return true
+	}
+	if len(runner.Labels) == 0 {
+		return false
+	}
+
+	available := make(map[string]struct{}, len(runner.Labels))
+	for _, label := range runner.Labels {
+		label = strings.ToLower(strings.TrimSpace(label))
+		if label != "" {
+			available[label] = struct{}{}
+		}
+	}
+	for label := range required {
+		if _, ok := available[label]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func labelsSet(labels string) map[string]struct{} {
+	parts := strings.Split(labels, ",")
+	result := make(map[string]struct{}, len(parts))
+	for _, label := range parts {
+		label = strings.ToLower(strings.TrimSpace(label))
+		if label != "" {
+			result[label] = struct{}{}
+		}
+	}
+	return result
+}
+
+func (r *Reconciler) suspendRunnerInventoryCache() {
+	type runnerInventoryCacheSuspender interface {
+		SuspendRunnerInventoryCache()
+	}
+	if cache, ok := r.ci.(runnerInventoryCacheSuspender); ok {
+		cache.SuspendRunnerInventoryCache()
+	}
+}
+
+func (r *Reconciler) resumeRunnerInventoryCache() {
+	type runnerInventoryCacheResumer interface {
+		ResumeRunnerInventoryCache()
+	}
+	if cache, ok := r.ci.(runnerInventoryCacheResumer); ok {
+		cache.ResumeRunnerInventoryCache()
+	}
 }
 
 func (r *Reconciler) getRemoveToken(ctx context.Context, pass *reconcilePass) (string, error) {

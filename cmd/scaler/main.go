@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/Cordtus/gh-runner-scaler/internal/config"
@@ -148,13 +149,14 @@ func wireRunnerGroups(cfg *config.Config, log *slog.Logger) ([]daemon.RunnerGrou
 
 	groups := make([]daemon.RunnerGroup, 0, len(classes))
 	legacyStateDir := len(cfg.RunnerClasses) == 0
+	githubProvidersByOrg := make(map[string]*ghprovider.Provider)
 	for _, class := range classes {
 		runtime, cache, err := wireRuntimeAndCache(cfg, class)
 		if err != nil {
 			return nil, nil, fmt.Errorf("runner class %s: %w", class.ID, err)
 		}
 
-		ci, err := wireCIProvider(cfg, class)
+		ci, err := wireCIProvider(cfg, class, githubProvidersByOrg)
 		if err != nil {
 			return nil, nil, fmt.Errorf("runner class %s: %w", class.ID, err)
 		}
@@ -231,10 +233,16 @@ func wireRuntimeAndCache(cfg *config.Config, class config.RunnerClass) (iface.Co
 	return runtime, cache, nil
 }
 
-func wireCIProvider(cfg *config.Config, class config.RunnerClass) (iface.CIProvider, error) {
+func wireCIProvider(cfg *config.Config, class config.RunnerClass, githubProvidersByOrg map[string]*ghprovider.Provider) (iface.CIProvider, error) {
 	switch cfg.CI.Provider {
 	case "github":
 		p := ghprovider.New(cfg.CI.GitHub.Token, class.Org, class.Prefix)
+		orgCacheKey := strings.ToLower(class.Org)
+		if shared := githubProvidersByOrg[orgCacheKey]; shared != nil {
+			p.ShareRunnerCacheWith(shared)
+		} else {
+			githubProvidersByOrg[orgCacheKey] = p
+		}
 		p.SetValidator(cfg.CI.GitHub.WebhookSecret)
 		p.SetWorkflowRepoBatchSize(cfg.Metrics.WorkflowRepoBatchSize)
 		return p, nil

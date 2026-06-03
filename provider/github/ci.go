@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	defaultRunnerCacheTTL = 30 * time.Second
-	defaultRunnerStaleTTL = 10 * time.Minute
+	defaultRunnerCacheTTL      = 5 * time.Second
+	defaultRunnerStaleTTL      = 10 * time.Minute
+	defaultTokenRefreshPadding = 5 * time.Minute
 )
 
 // Provider implements CIProvider for GitHub Actions.
@@ -26,16 +27,32 @@ type Provider struct {
 	prefix                string
 	validator             *WebhookValidator
 	mu                    sync.Mutex
-	runnerFetchMu         sync.Mutex
 	runnerCacheTTL        time.Duration
 	runnerStaleTTL        time.Duration
-	runnerCache           []domain.Runner
-	runnerCacheFetchedAt  time.Time
+	runnerCache           *runnerInventoryCache
 	workflowRepoBatchSize int
 	repoCacheTTL          time.Duration
 	repoCache             []string
 	repoCacheExpiresAt    time.Time
 	workflowRepoCursor    int
+	registrationToken     cachedToken
+	registrationFetchMu   sync.Mutex
+	removeToken           cachedToken
+	removeFetchMu         sync.Mutex
+}
+
+type runnerInventoryCache struct {
+	mu         sync.Mutex
+	fetchMu    sync.Mutex
+	runners    []domain.Runner
+	fetchedAt  time.Time
+	suspended  bool
+	generation uint64
+}
+
+type cachedToken struct {
+	value     string
+	expiresAt time.Time
 }
 
 // New creates a GitHub CI provider.
@@ -51,9 +68,21 @@ func newProvider(client *gh.Client, org, prefix string) *Provider {
 		prefix:                prefix,
 		runnerCacheTTL:        defaultRunnerCacheTTL,
 		runnerStaleTTL:        defaultRunnerStaleTTL,
+		runnerCache:           &runnerInventoryCache{},
 		workflowRepoBatchSize: 25,
 		repoCacheTTL:          10 * time.Minute,
 	}
+}
+
+// ShareRunnerCacheWith lets providers for the same org reuse a recent runner inventory.
+func (p *Provider) ShareRunnerCacheWith(other *Provider) {
+	if other == nil || other == p {
+		return
+	}
+	otherCache := other.currentRunnerCache()
+	p.mu.Lock()
+	p.runnerCache = otherCache
+	p.mu.Unlock()
 }
 
 // SetRunnerCacheTTL bounds how long fresh runner inventory can be reused.
@@ -89,15 +118,8 @@ func (p *Provider) SetWorkflowRepoBatchSize(size int) {
 
 // ListRunners returns all runners registered with the org.
 func (p *Provider) ListRunners(ctx context.Context) ([]domain.Runner, error) {
-	p.runnerFetchMu.Lock()
-	defer p.runnerFetchMu.Unlock()
-
-	runners, err := p.fetchRunners(ctx)
-	if err != nil {
-		return nil, err
-	}
-	p.storeRunnerCache(runners)
-	return append([]domain.Runner(nil), runners...), nil
+	runners, _, err := p.listRunners(ctx, false)
+	return runners, err
 }
 
 // ListRunnersForMetrics returns runner inventory with bounded stale fallback for dashboards.
@@ -110,12 +132,14 @@ func (p *Provider) listRunners(ctx context.Context, allowStale bool) ([]domain.R
 		return runners, meta, nil
 	}
 
-	p.runnerFetchMu.Lock()
-	defer p.runnerFetchMu.Unlock()
+	cache := p.currentRunnerCache()
+	cache.fetchMu.Lock()
+	defer cache.fetchMu.Unlock()
 
 	if runners, meta, ok := p.cachedRunners(false); ok {
 		return runners, meta, nil
 	}
+	generation := p.runnerCacheGeneration()
 
 	runners, err := p.fetchRunners(ctx)
 	if err != nil {
@@ -129,8 +153,9 @@ func (p *Provider) listRunners(ctx context.Context, allowStale bool) ([]domain.R
 		return nil, domain.RunnerInventoryMeta{}, err
 	}
 
-	p.storeRunnerCache(runners)
-	return append([]domain.Runner(nil), runners...), p.runnerInventoryMeta(time.Now(), false), nil
+	fetchedAt := time.Now()
+	p.storeRunnerCache(runners, generation, fetchedAt)
+	return p.annotateRunners(runners), runnerInventoryMeta(fetchedAt, time.Now(), false), nil
 }
 
 func (p *Provider) fetchRunners(ctx context.Context) ([]domain.Runner, error) {
@@ -155,7 +180,6 @@ func (p *Provider) fetchRunners(ctx context.Context) ([]domain.Runner, error) {
 				Status: r.GetStatus(),
 				Busy:   r.GetBusy(),
 				Labels: labels,
-				IsAuto: strings.HasPrefix(r.GetName(), p.prefix),
 			})
 		}
 
@@ -167,44 +191,54 @@ func (p *Provider) fetchRunners(ctx context.Context) ([]domain.Runner, error) {
 	return runners, nil
 }
 
-func (p *Provider) storeRunnerCache(runners []domain.Runner) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+func (p *Provider) storeRunnerCache(runners []domain.Runner, generation uint64, fetchedAt time.Time) {
+	cache := p.currentRunnerCache()
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
 
-	p.runnerCache = append([]domain.Runner(nil), runners...)
-	p.runnerCacheFetchedAt = time.Now()
+	if cache.generation != generation {
+		return
+	}
+	cache.runners = append([]domain.Runner(nil), runners...)
+	cache.fetchedAt = fetchedAt
 }
 
 func (p *Provider) cachedRunners(allowStale bool) ([]domain.Runner, domain.RunnerInventoryMeta, bool) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	cache := p.currentRunnerCache()
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
 
-	if p.runnerCacheFetchedAt.IsZero() {
+	if cache.fetchedAt.IsZero() {
 		return nil, domain.RunnerInventoryMeta{}, false
 	}
 
 	now := time.Now()
-	age := now.Sub(p.runnerCacheFetchedAt)
+	age := now.Sub(cache.fetchedAt)
 	if age < 0 {
 		age = 0
 	}
-	if p.runnerCacheTTL > 0 && age <= p.runnerCacheTTL {
-		return append([]domain.Runner(nil), p.runnerCache...), p.runnerInventoryMetaLocked(now, false), true
+	runnerCacheTTL, runnerStaleTTL := p.runnerCacheTTLs()
+	if !allowStale && cache.suspended {
+		return nil, domain.RunnerInventoryMeta{}, false
 	}
-	if allowStale && p.runnerStaleTTL > 0 && age <= p.runnerStaleTTL {
-		return append([]domain.Runner(nil), p.runnerCache...), p.runnerInventoryMetaLocked(now, true), true
+	if runnerCacheTTL > 0 && age <= runnerCacheTTL {
+		return p.annotateRunners(cache.runners), runnerInventoryMeta(cache.fetchedAt, now, false), true
+	}
+	if allowStale && runnerStaleTTL > 0 && age <= runnerStaleTTL {
+		return p.annotateRunners(cache.runners), runnerInventoryMeta(cache.fetchedAt, now, true), true
 	}
 	return nil, domain.RunnerInventoryMeta{}, false
 }
 
-func (p *Provider) runnerInventoryMeta(now time.Time, stale bool) domain.RunnerInventoryMeta {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.runnerInventoryMetaLocked(now, stale)
+func (p *Provider) runnerCacheGeneration() uint64 {
+	cache := p.currentRunnerCache()
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	return cache.generation
 }
 
-func (p *Provider) runnerInventoryMetaLocked(now time.Time, stale bool) domain.RunnerInventoryMeta {
-	age := now.Sub(p.runnerCacheFetchedAt)
+func runnerInventoryMeta(fetchedAt, now time.Time, stale bool) domain.RunnerInventoryMeta {
+	age := now.Sub(fetchedAt)
 	if age < 0 {
 		age = 0
 	}
@@ -212,26 +246,58 @@ func (p *Provider) runnerInventoryMetaLocked(now time.Time, stale bool) domain.R
 	return domain.RunnerInventoryMeta{
 		Stale:     stale,
 		AgeS:      ageSeconds,
-		FetchedAt: p.runnerCacheFetchedAt.UTC().Format(time.RFC3339),
+		FetchedAt: fetchedAt.UTC().Format(time.RFC3339),
 	}
 }
 
 // GetRegistrationToken returns a short-lived runner registration token.
 func (p *Provider) GetRegistrationToken(ctx context.Context) (string, error) {
+	if token, ok := p.cachedRegistrationToken(); ok {
+		p.SuspendRunnerInventoryCache()
+		return token, nil
+	}
+
+	p.registrationFetchMu.Lock()
+	defer p.registrationFetchMu.Unlock()
+
+	if token, ok := p.cachedRegistrationToken(); ok {
+		p.SuspendRunnerInventoryCache()
+		return token, nil
+	}
+
 	token, _, err := p.client.Actions.CreateOrganizationRegistrationToken(ctx, p.org)
 	if err != nil {
 		return "", fmt.Errorf("creating registration token: %w", err)
 	}
-	return token.GetToken(), nil
+	value := token.GetToken()
+	p.storeRegistrationToken(value, tokenExpiresAt(token.ExpiresAt))
+	p.SuspendRunnerInventoryCache()
+	return value, nil
 }
 
 // GetRemoveToken returns a short-lived runner removal token.
 func (p *Provider) GetRemoveToken(ctx context.Context) (string, error) {
+	if token, ok := p.cachedRemoveToken(); ok {
+		p.SuspendRunnerInventoryCache()
+		return token, nil
+	}
+
+	p.removeFetchMu.Lock()
+	defer p.removeFetchMu.Unlock()
+
+	if token, ok := p.cachedRemoveToken(); ok {
+		p.SuspendRunnerInventoryCache()
+		return token, nil
+	}
+
 	token, _, err := p.client.Actions.CreateOrganizationRemoveToken(ctx, p.org)
 	if err != nil {
 		return "", fmt.Errorf("creating remove token: %w", err)
 	}
-	return token.GetToken(), nil
+	value := token.GetToken()
+	p.storeRemoveToken(value, tokenExpiresAt(token.ExpiresAt))
+	p.SuspendRunnerInventoryCache()
+	return value, nil
 }
 
 // DeleteRunner removes a runner by ID from the org.
@@ -240,6 +306,7 @@ func (p *Provider) DeleteRunner(ctx context.Context, runnerID int64) error {
 	if err != nil {
 		return fmt.Errorf("deleting runner %d: %w", runnerID, err)
 	}
+	p.invalidateRunnerCache()
 	return nil
 }
 
@@ -251,6 +318,99 @@ func (p *Provider) RegistrationURL() string {
 // ClassifyRunner returns true if the runner name matches the auto-scaled prefix.
 func (p *Provider) ClassifyRunner(name string) bool {
 	return strings.HasPrefix(name, p.prefix)
+}
+
+func (p *Provider) currentRunnerCache() *runnerInventoryCache {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.runnerCache == nil {
+		p.runnerCache = &runnerInventoryCache{}
+	}
+	return p.runnerCache
+}
+
+func (p *Provider) runnerCacheTTLs() (time.Duration, time.Duration) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.runnerCacheTTL, p.runnerStaleTTL
+}
+
+func (p *Provider) invalidateRunnerCache() {
+	cache := p.currentRunnerCache()
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	cache.runners = nil
+	cache.fetchedAt = time.Time{}
+	cache.generation++
+}
+
+// SuspendRunnerInventoryCache prevents reconcile from using snapshots fetched during runner mutations.
+func (p *Provider) SuspendRunnerInventoryCache() {
+	cache := p.currentRunnerCache()
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	cache.runners = nil
+	cache.fetchedAt = time.Time{}
+	cache.suspended = true
+	cache.generation++
+}
+
+// ResumeRunnerInventoryCache allows reconcile cache hits after clearing mutation-period snapshots.
+func (p *Provider) ResumeRunnerInventoryCache() {
+	cache := p.currentRunnerCache()
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	cache.runners = nil
+	cache.fetchedAt = time.Time{}
+	cache.suspended = false
+	cache.generation++
+}
+
+func (p *Provider) annotateRunners(runners []domain.Runner) []domain.Runner {
+	result := append([]domain.Runner(nil), runners...)
+	for i := range result {
+		result[i].IsAuto = strings.HasPrefix(result[i].Name, p.prefix)
+	}
+	return result
+}
+
+func (p *Provider) cachedRegistrationToken() (string, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return usableCachedToken(p.registrationToken)
+}
+
+func (p *Provider) storeRegistrationToken(value string, expiresAt time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.registrationToken = cachedToken{value: value, expiresAt: expiresAt}
+}
+
+func (p *Provider) cachedRemoveToken() (string, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return usableCachedToken(p.removeToken)
+}
+
+func (p *Provider) storeRemoveToken(value string, expiresAt time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.removeToken = cachedToken{value: value, expiresAt: expiresAt}
+}
+
+func usableCachedToken(token cachedToken) (string, bool) {
+	if token.value == "" || token.expiresAt.IsZero() {
+		return "", false
+	}
+	return token.value, time.Now().Add(defaultTokenRefreshPadding).Before(token.expiresAt)
+}
+
+func tokenExpiresAt(ts *gh.Timestamp) time.Time {
+	if ts == nil {
+		return time.Time{}
+	}
+	return ts.Time
 }
 
 // ListRecentWorkflowRuns returns completed workflow runs across all org repos.

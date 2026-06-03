@@ -155,6 +155,8 @@ interval = "60s"
 collect_workflows = true
 workflow_repo_batch_size = 25     # 0 = scan every repo each interval
 collect_host = true
+# Lower GitHub API load by keeping this interval at or above the default and
+# keeping workflow_repo_batch_size bounded for large orgs.
 
 [metrics.loki]
 # Set via env: LOKI_PUSH_URL, LOKI_USERNAME, GRAFANA_CLOUD_API_KEY
