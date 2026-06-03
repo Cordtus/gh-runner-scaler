@@ -47,7 +47,7 @@ clone template -> start -> wait for boot (90s max)
 
 Deregistration is belt-and-suspenders: `config.sh remove` followed by a GitHub API DELETE. Cleanup keeps going after best-effort service-stop or deregistration errors. If the container delete succeeds, the reconciler treats that runner as removed for capacity and next-name decisions, so a replacement can still be created even when cleanup logged warnings.
 
-**Webhook** is the primary event driver. `workflow_job.queued` and `workflow_job.completed` events trigger the scaler within 2 seconds (debounced). `push` events to tracked repos trigger cache volume syncs via `lxc exec` on a running container when the push targets that repo's default branch.
+**Webhook** is the primary event driver. `workflow_job.queued` and `workflow_job.completed` events trigger the scaler within 2 seconds (debounced). When `[[runner_classes]]` are configured, the daemon routes the trigger to the class whose `match_labels` are present in the job's `runs-on` labels. `push` events to tracked repos trigger cache volume syncs via `lxc exec` on a running container when the push targets that repo's default branch.
 
 **Poll loop** runs every `poll_interval` as a safety net in case a webhook is missed.
 
@@ -230,7 +230,7 @@ CI runs `gofmt`, `go vet`, `go test`, and `go build` on pushes and pull requests
 
 ### Config File (TOML)
 
-Copy `config.example.toml` and edit. Every setting has a sensible default except `ci.org`.
+Copy `config.example.toml` and edit. Every setting has a sensible default except `ci.org`, unless each configured runner class sets its own `org`.
 
 ```bash
 cp config.example.toml config.toml
@@ -244,7 +244,7 @@ cp config.example.toml config.toml
 | `max_auto_runners` | `6` | Max ephemeral containers |
 | `idle_timeout` | `300s` | Idle time before teardown |
 | `poll_interval` | `30s` | How often the reconciler checks state |
-| `labels` | `self-hosted,linux,x64` | Runner labels (comma-separated) |
+| `labels` | `self-hosted,linux,x64,runner-class-axionic` | Runner labels (comma-separated) |
 | `runner_work_dir` | `_work` | Working directory passed to `config.sh` |
 
 #### Container
@@ -338,6 +338,76 @@ The scaler writes these cache env values only when it configures a managed runne
 
 GitHub-specific settings under `[ci.github]` are currently empty -- token and webhook secret are set via environment variables.
 
+#### Runner Classes: `[[runner_classes]]`
+
+Runner classes let one daemon manage multiple logical runner types without splitting into separate deployments. If no `[[runner_classes]]` entries are present, the daemon synthesizes one `default` class from the existing `[scaler]`, `[container]`, `[cache]`, and `[ci]` settings, so current Axionic-style single-pool configs keep working.
+
+Each class can override the inherited org, runner prefix, labels, scale cap, idle timeout, work directory, LXD template, and cache profile:
+
+```toml
+[[runner_classes]]
+id = "typescript-standard"
+org = "ExampleOrg"
+prefix = "ts-runner"
+labels = "self-hosted,linux,x64,runner-class-typescript"
+match_labels = ["self-hosted", "linux", "x64", "runner-class-typescript"]
+max_auto_runners = 8
+idle_timeout = "300s"
+runner_work_dir = "_work"
+template = "gh-runner-template-typescript"
+cache_profile = "node"
+
+[[runner_classes]]
+id = "rust-standard"
+org = "ExampleOrg"
+prefix = "rust-runner"
+labels = "self-hosted,linux,x64,runner-class-rust"
+match_labels = ["self-hosted", "linux", "x64", "runner-class-rust"]
+max_auto_runners = 6
+idle_timeout = "300s"
+runner_work_dir = "_work"
+template = "gh-runner-template-rust"
+cache_profile = "rust"
+```
+
+Use distinctive labels in both `labels` and workflow `runs-on` values so GitHub schedules jobs onto the intended class:
+
+```yaml
+runs-on: [self-hosted, linux, x64, runner-class-rust]
+```
+
+`match_labels` controls router wakeups. If a queued job has no labels or no class matches, the daemon falls back to triggering all classes rather than dropping the event.
+
+#### Cache Profiles: `[cache_profiles.<name>]`
+
+Cache profiles are reusable cache definitions for runner classes. They use the same shape as `[cache]`, including `[cache_profiles.<name>.prune]` and repeated `[[cache_profiles.<name>.symlinks]]` entries:
+
+```toml
+[cache_profiles.rust]
+enabled = true
+pool = "pool9"
+volume = "runner-cache-rust"
+
+[cache_profiles.rust.prune]
+enabled = true
+interval = "24h"
+max_age = "336h"
+temp_max_age = "6h"
+paths = ["/cache/buildx"]
+
+[[cache_profiles.rust.symlinks]]
+source = "/cache/cargo-registry"
+target = "/home/runner/.cargo/registry"
+
+[[cache_profiles.rust.symlinks]]
+source = "/cache/cargo-git"
+target = "/home/runner/.cargo/git"
+```
+
+Runner classes that omit `cache_profile` inherit the top-level `[cache]` settings.
+
+When explicit runner classes are configured, per-runner state is stored below `state.filesystem.dir/runner-groups/<id>/`. Legacy single-class configs continue to use the configured state directory directly.
+
 #### Webhook: `[webhook]`
 
 | Key | Default | Description |
@@ -398,6 +468,8 @@ When metrics are enabled, the daemon also derives two additional observability s
 - `issue-events`: warning/error events from the scaler itself for issue-count panels
 
 Workflow metrics are collected in two phases to control GitHub API use. The provider first lists recent completed workflow runs without job/step detail, filters out runs already delivered to Loki, and only then enriches fresh failed runs with failed job, failed step, and failure reason. The org repository list is cached for 10 minutes, and `workflow_repo_batch_size` rotates through repos across collection intervals. With the default `25`, a large org is scanned in bounded chunks instead of every metrics tick.
+
+With `[[runner_classes]]`, runner and host metric streams include a `group_id` Loki label and JSON field so class-specific panels can filter or split the pool.
 
 Shared-cache pruning only removes stale directories under configured `/cache/...` paths. It does not prune retained structured event history, workflow metric dedupe state, or issue-event dedupe state in the daemon state directory.
 

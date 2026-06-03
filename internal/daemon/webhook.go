@@ -169,9 +169,12 @@ func (d *Daemon) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 	switch event.Type {
 	case domain.EventJobQueued, domain.EventJobCompleted:
-		d.debouncer.schedule(d.currentLifecycleContext(), "scaler", d.cfg.WebhookDebounce, func() {
-			d.Trigger()
-		})
+		for _, group := range d.groupsForEvent(event) {
+			groupID := group.ID
+			d.debouncer.schedule(d.currentLifecycleContext(), "scaler-"+groupID, d.cfg.WebhookDebounce, func() {
+				d.TriggerGroup(groupID)
+			})
+		}
 	case domain.EventPush:
 		d.handlePushEvent(event)
 	}
@@ -264,7 +267,46 @@ func (d *Daemon) logWebhookEvent(event *domain.WebhookEvent) {
 	if event.RunAttempt != 0 {
 		args = append(args, "run_attempt", event.RunAttempt)
 	}
+	if len(event.Labels) > 0 {
+		args = append(args, "labels", strings.Join(event.Labels, ","))
+	}
 	d.log.Info("webhook event", args...)
+}
+
+func (d *Daemon) groupsForEvent(event *domain.WebhookEvent) []RunnerGroup {
+	if event == nil || len(event.Labels) == 0 {
+		return append([]RunnerGroup(nil), d.groups...)
+	}
+	groups := make([]RunnerGroup, 0, len(d.groups))
+	for _, group := range d.groups {
+		if labelsMatch(event.Labels, group.MatchLabels) {
+			groups = append(groups, group)
+		}
+	}
+	if len(groups) == 0 {
+		return append([]RunnerGroup(nil), d.groups...)
+	}
+	return groups
+}
+
+func labelsMatch(jobLabels, groupLabels []string) bool {
+	if len(groupLabels) == 0 {
+		return true
+	}
+	seen := make(map[string]struct{}, len(jobLabels))
+	for _, label := range jobLabels {
+		seen[strings.ToLower(strings.TrimSpace(label))] = struct{}{}
+	}
+	for _, label := range groupLabels {
+		label = strings.ToLower(strings.TrimSpace(label))
+		if label == "" {
+			continue
+		}
+		if _, ok := seen[label]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // handlePushEvent triggers a cache sync if the pushed repo is tracked.

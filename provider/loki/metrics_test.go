@@ -183,6 +183,62 @@ func TestPushHostMetrics_OmitsManagedRunnerFieldsWhenUnavailable(t *testing.T) {
 	}
 }
 
+func TestPushRunnerMetrics_LabelsGroupID(t *testing.T) {
+	var captured lokiPayload
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	backend := New(server.URL, "user", "key", "Axionic-Labs")
+	metrics := domain.RunnerMetrics{
+		GroupID:      "rust",
+		TotalRunners: 1,
+	}
+
+	if err := backend.PushRunnerMetrics(context.Background(), metrics); err != nil {
+		t.Fatalf("PushRunnerMetrics returned error: %v", err)
+	}
+
+	if len(captured.Streams) != 1 {
+		t.Fatalf("Streams len = %d, want 1", len(captured.Streams))
+	}
+	if got := captured.Streams[0].Stream["group_id"]; got != "rust" {
+		t.Fatalf("group_id label = %q, want rust", got)
+	}
+}
+
+func TestPushHostMetrics_LabelsGroupID(t *testing.T) {
+	var captured lokiPayload
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	backend := New(server.URL, "user", "key", "Axionic-Labs")
+	metrics := domain.HostMetrics{
+		GroupID:           "typescript",
+		ContainersRunning: 2,
+	}
+
+	if err := backend.PushHostMetrics(context.Background(), metrics); err != nil {
+		t.Fatalf("PushHostMetrics returned error: %v", err)
+	}
+
+	if len(captured.Streams) != 1 {
+		t.Fatalf("Streams len = %d, want 1", len(captured.Streams))
+	}
+	if got := captured.Streams[0].Stream["group_id"]; got != "typescript" {
+		t.Fatalf("group_id label = %q, want typescript", got)
+	}
+}
+
 func TestPushIssueEvents_UsesObservedTimestamp(t *testing.T) {
 	var captured lokiPayload
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

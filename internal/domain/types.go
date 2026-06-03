@@ -90,6 +90,7 @@ type WebhookEvent struct {
 	RunID         int64
 	RunAttempt    int
 	Detail        string // human-readable summary for logging
+	Labels        []string
 }
 
 // RunnerDetail is a per-runner entry in metrics payloads.
@@ -103,6 +104,7 @@ type RunnerDetail struct {
 // RunnerMetrics is the runner pool state pushed to the metrics backend.
 // JSON field names must match the Grafana dashboard queries exactly.
 type RunnerMetrics struct {
+	GroupID                string         `json:"group_id,omitempty"`
 	TotalRunners           int            `json:"total_runners"`
 	BusyRunners            int            `json:"busy_runners"`
 	IdleRunners            int            `json:"idle_runners"`
@@ -184,6 +186,7 @@ type LifecycleMetrics struct {
 
 // HostMetrics captures container and storage pool state.
 type HostMetrics struct {
+	GroupID                 string  `json:"group_id,omitempty"`
 	ContainersRunning       int     `json:"containers_running"`
 	ContainersStopped       int     `json:"containers_stopped"`
 	RunnerContainersRunning *int    `json:"runner_containers_running,omitempty"`

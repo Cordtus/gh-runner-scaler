@@ -47,6 +47,9 @@ func (b *Backend) PushRunnerMetrics(ctx context.Context, m domain.RunnerMetrics)
 		"service": "runner-metrics",
 		"org":     b.org,
 	}
+	if m.GroupID != "" {
+		labels["group_id"] = m.GroupID
+	}
 	return b.push(ctx, labels, m)
 }
 
@@ -106,6 +109,9 @@ func (b *Backend) PushHostMetrics(ctx context.Context, m domain.HostMetrics) err
 		"job":     "gh-runner-scaler",
 		"service": "host-metrics",
 		"org":     b.org,
+	}
+	if m.GroupID != "" {
+		labels["group_id"] = m.GroupID
 	}
 	return b.push(ctx, labels, m)
 }
