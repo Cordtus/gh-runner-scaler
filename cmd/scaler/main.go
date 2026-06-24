@@ -25,6 +25,8 @@ import (
 
 var version = "dev"
 
+const multiTargetMetricsLabel = "multi-target"
+
 func main() {
 	if len(os.Args) < 2 {
 		os.Args = append(os.Args, "daemon")
@@ -186,6 +188,8 @@ func wireRunnerGroups(cfg *config.Config, log *slog.Logger) ([]daemon.RunnerGrou
 
 		groups = append(groups, daemon.RunnerGroup{
 			ID:          class.ID,
+			Target:      class.TargetName(),
+			RepoScoped:  class.RepoScoped(),
 			Prefix:      class.Prefix,
 			MatchLabels: class.MatchLabels,
 			CachePool:   class.Cache.Pool,
@@ -196,7 +200,7 @@ func wireRunnerGroups(cfg *config.Config, log *slog.Logger) ([]daemon.RunnerGrou
 		})
 	}
 
-	return groups, wireMetricsBackend(cfg, classes[0]), nil
+	return groups, wireMetricsBackendForTarget(cfg, daemonMetricsTarget(classes)), nil
 }
 
 func wireRuntimeAndCache(cfg *config.Config, class config.RunnerClass) (iface.ContainerRuntime, iface.CacheManager, error) {
@@ -236,12 +240,21 @@ func wireRuntimeAndCache(cfg *config.Config, class config.RunnerClass) (iface.Co
 func wireCIProvider(cfg *config.Config, class config.RunnerClass, githubProvidersByOrg map[string]*ghprovider.Provider) (iface.CIProvider, error) {
 	switch cfg.CI.Provider {
 	case "github":
-		p := ghprovider.New(cfg.CI.GitHub.Token, class.Org, class.Prefix)
-		orgCacheKey := strings.ToLower(class.Org)
-		if shared := githubProvidersByOrg[orgCacheKey]; shared != nil {
+		var p *ghprovider.Provider
+		var err error
+		if class.RepoScoped() {
+			p, err = ghprovider.NewForRepo(cfg.CI.GitHub.Token, class.Repo, class.Prefix)
+		} else {
+			p = ghprovider.New(cfg.CI.GitHub.Token, class.Org, class.Prefix)
+		}
+		if err != nil {
+			return nil, err
+		}
+		targetCacheKey := githubTargetCacheKey(class)
+		if shared := githubProvidersByOrg[targetCacheKey]; shared != nil {
 			p.ShareRunnerCacheWith(shared)
 		} else {
-			githubProvidersByOrg[orgCacheKey] = p
+			githubProvidersByOrg[targetCacheKey] = p
 		}
 		p.SetValidator(cfg.CI.GitHub.WebhookSecret)
 		p.SetWorkflowRepoBatchSize(cfg.Metrics.WorkflowRepoBatchSize)
@@ -251,7 +264,18 @@ func wireCIProvider(cfg *config.Config, class config.RunnerClass, githubProvider
 	}
 }
 
+func githubTargetCacheKey(class config.RunnerClass) string {
+	if class.RepoScoped() {
+		return strings.ToLower("repo:" + class.Repo)
+	}
+	return strings.ToLower("org:" + class.Org)
+}
+
 func wireMetricsBackend(cfg *config.Config, class config.RunnerClass) iface.MetricsBackend {
+	return wireMetricsBackendForTarget(cfg, class.TargetName())
+}
+
+func wireMetricsBackendForTarget(cfg *config.Config, target string) iface.MetricsBackend {
 	if !cfg.Metrics.Enabled {
 		return nil
 	}
@@ -259,8 +283,21 @@ func wireMetricsBackend(cfg *config.Config, class config.RunnerClass) iface.Metr
 		cfg.Metrics.Loki.PushURL,
 		cfg.Metrics.Loki.Username,
 		cfg.Metrics.Loki.APIKey,
-		class.Org,
+		target,
 	)
+}
+
+func daemonMetricsTarget(classes []config.RunnerClass) string {
+	if len(classes) == 0 {
+		return ""
+	}
+	target := classes[0].TargetName()
+	for _, class := range classes[1:] {
+		if !strings.EqualFold(class.TargetName(), target) {
+			return multiTargetMetricsLabel
+		}
+	}
+	return target
 }
 
 func wireState(cfg *config.Config, stateDir string) (iface.StateStore, error) {

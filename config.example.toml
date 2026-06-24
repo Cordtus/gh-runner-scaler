@@ -6,7 +6,7 @@ prefix = "gh-runner-auto"
 max_auto_runners = 6
 idle_timeout = "300s"
 poll_interval = "30s"
-labels = "self-hosted,linux,x64,runner-class-axionic"
+labels = "self-hosted,linux,x64,runner-class-default"
 runner_work_dir = "_work"
 
 [container]
@@ -15,14 +15,14 @@ template = "gh-runner-template"
 
 [container.lxd]
 socket = ""                    # empty = default LXD socket
-remote = ""                    # empty = local; e.g. "nodev2" for remote host
+remote = ""                    # empty = local; e.g. "lxd-prod" for remote host
 # remote_url = ""              # HTTPS remote URL
 # remote_cert = ""             # client certificate path
 # remote_key = ""              # client key path
 
 [cache]
 enabled = false
-pool = ""                      # ZFS pool name (e.g. "pool9")
+pool = ""                      # ZFS pool name (e.g. "runner-pool")
 volume = ""                    # ZFS volume name (e.g. "runner-cache")
 # When enabled, the scaler also prepares /cache/buildx and writes
 # RUNNER_BUILDX_CACHE_ROOT=/cache/buildx plus DOCKER_BUILDKIT=1 into
@@ -54,15 +54,26 @@ target = "/opt/hostedtoolcache"
 # When this target is present, the scaler also writes AGENT_TOOLSDIRECTORY and
 # RUNNER_TOOL_CACHE into /home/runner/.env before installing the runner service.
 
-[[cache.symlinks]]
-source = "/cache/axionic-ui"
-target = "/opt/axionic-ui"
+# Add repo-specific cache mounts only for repositories currently served by
+# this scaler target.
+# [[cache.symlinks]]
+# source = "/cache/example-repo"
+# target = "/opt/example-repo"
 
 [ci]
 provider = "github"            # future: "gitlab", etc.
-org = "Axionic-Labs"
+org = ""                       # org-scoped runners; set either org or repo
+# repo = ""                    # repo-scoped runners for one repository, owner/name
 # Token: set GH_SCALER_GITHUB_TOKEN env var
-# Required scopes: repo, manage_runners:org, admin:org_hook
+# Fine-grained org target permissions:
+# - Organization: Self-hosted runners (read/write)
+# - Repository: Actions (read) when workflow metrics are enabled
+# - Repository: Metadata (read) when org workflow metrics are enabled
+# Fine-grained repo target permissions:
+# - Repository: Administration (write)
+# - Repository: Actions (read) when workflow metrics are enabled
+# Classic PAT org target scopes: admin:org, plus repo for private repo workflow metrics.
+# Repo-scoped personal targets require repository admin access; classic PAT scope: repo.
 
 [ci.github]
 # Webhook secret: set GH_WEBHOOK_SECRET env var
@@ -75,7 +86,7 @@ org = "Axionic-Labs"
 #
 # [cache_profiles.node]
 # enabled = true
-# pool = "pool9"
+# pool = "runner-pool"
 # volume = "runner-cache-node"
 #
 # [cache_profiles.node.prune]
@@ -95,7 +106,7 @@ org = "Axionic-Labs"
 #
 # [cache_profiles.rust]
 # enabled = true
-# pool = "pool9"
+# pool = "runner-pool"
 # volume = "runner-cache-rust"
 #
 # [cache_profiles.rust.prune]
@@ -137,6 +148,18 @@ org = "Axionic-Labs"
 # template = "gh-runner-template-rust"
 # cache_profile = "rust"
 
+# Personal repositories are repo-scoped, not owner-wide. Add one runner class
+# per personal repository that should use this platform.
+# [[runner_classes]]
+# id = "personal-example"
+# repo = "octo-user/example-repo"
+# prefix = "gh-runner-personal-example"
+# labels = "self-hosted,linux,x64,runner-class-personal"
+# match_labels = ["self-hosted", "linux", "x64", "runner-class-personal"]
+# max_auto_runners = 2
+# runner_work_dir = "_work"
+# template = "gh-runner-template"
+
 [webhook]
 enabled = true
 port = 9876
@@ -147,10 +170,10 @@ debounce = "2s"
 [webhook.sync_repos]
 # Pushes to each repo's default branch trigger cache syncs for these repos.
 # Key = repo full name, value = path on cache volume.
-"Axionic-Labs/axionic-ui" = "/cache/axionic-ui"
+# "ExampleOrg/example-repo" = "/cache/example-repo"
 
 [metrics]
-enabled = true
+enabled = false
 interval = "60s"
 collect_workflows = true
 workflow_repo_batch_size = 25     # 0 = scan every repo each interval
@@ -165,4 +188,4 @@ collect_host = true
 provider = "filesystem"        # future: "supabase", "redis", etc.
 
 [state.filesystem]
-dir = ".state"
+dir = "/var/lib/gh-runner-scaler/state"

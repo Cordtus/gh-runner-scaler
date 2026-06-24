@@ -64,6 +64,85 @@ func TestListRunners_PaginatesAcrossAllPages(t *testing.T) {
 	}
 }
 
+func TestRepositoryTarget_UsesRepositoryRunnerEndpoints(t *testing.T) {
+	calls := make(map[string]int)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls[r.Method+" "+r.URL.Path]++
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/Cordtus/gh-runner-scaler/actions/runners":
+			writeJSON(t, w, map[string]any{
+				"total_count": 1,
+				"runners": []map[string]any{{
+					"id":     21,
+					"name":   "personal-auto-1",
+					"status": "online",
+					"busy":   false,
+					"labels": []map[string]any{},
+				}},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/Cordtus/gh-runner-scaler/actions/runners/registration-token":
+			writeJSON(t, w, map[string]any{
+				"token":      "repo-registration-token",
+				"expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano),
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/Cordtus/gh-runner-scaler/actions/runners/remove-token":
+			writeJSON(t, w, map[string]any{
+				"token":      "repo-remove-token",
+				"expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano),
+			})
+		case r.Method == http.MethodDelete && r.URL.Path == "/repos/Cordtus/gh-runner-scaler/actions/runners/21":
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	provider := testRepoProviderWithPrefix(t, server, "Cordtus/gh-runner-scaler", "personal-auto")
+
+	runners, err := provider.ListRunners(context.Background())
+	if err != nil {
+		t.Fatalf("ListRunners returned error: %v", err)
+	}
+	if len(runners) != 1 || runners[0].Name != "personal-auto-1" || !runners[0].IsAuto {
+		t.Fatalf("unexpected repo runners: %+v", runners)
+	}
+
+	registrationToken, err := provider.GetRegistrationToken(context.Background())
+	if err != nil {
+		t.Fatalf("GetRegistrationToken returned error: %v", err)
+	}
+	if registrationToken != "repo-registration-token" {
+		t.Fatalf("registration token = %q, want repo-registration-token", registrationToken)
+	}
+
+	removeToken, err := provider.GetRemoveToken(context.Background())
+	if err != nil {
+		t.Fatalf("GetRemoveToken returned error: %v", err)
+	}
+	if removeToken != "repo-remove-token" {
+		t.Fatalf("remove token = %q, want repo-remove-token", removeToken)
+	}
+
+	if err := provider.DeleteRunner(context.Background(), 21); err != nil {
+		t.Fatalf("DeleteRunner returned error: %v", err)
+	}
+	if provider.RegistrationURL() != "https://github.com/Cordtus/gh-runner-scaler" {
+		t.Fatalf("RegistrationURL = %q", provider.RegistrationURL())
+	}
+
+	for _, key := range []string{
+		"GET /repos/Cordtus/gh-runner-scaler/actions/runners",
+		"POST /repos/Cordtus/gh-runner-scaler/actions/runners/registration-token",
+		"POST /repos/Cordtus/gh-runner-scaler/actions/runners/remove-token",
+		"DELETE /repos/Cordtus/gh-runner-scaler/actions/runners/21",
+	} {
+		if calls[key] != 1 {
+			t.Fatalf("endpoint %q calls = %d, want 1", key, calls[key])
+		}
+	}
+}
+
 func TestListRunners_ReusesFreshCache(t *testing.T) {
 	var calls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -684,6 +763,113 @@ func TestListRecentWorkflowRuns_EnrichesFailureDetailsFromWorkflowJobs(t *testin
 	}
 }
 
+func TestRepositoryTarget_ListRecentWorkflowRunsUsesSingleRepository(t *testing.T) {
+	var repoListCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/orgs/Cordtus/repos":
+			repoListCalls++
+			http.NotFound(w, r)
+		case r.URL.Path == "/repos/Cordtus/gh-runner-scaler/actions/runs":
+			writeJSON(t, w, map[string]any{
+				"total_count": 1,
+				"workflow_runs": []map[string]any{{
+					"id":             101,
+					"run_attempt":    1,
+					"name":           "build",
+					"conclusion":     "success",
+					"run_number":     3,
+					"event":          "push",
+					"head_branch":    "main",
+					"created_at":     "2026-04-19T12:00:00Z",
+					"run_started_at": "2026-04-19T12:01:00Z",
+					"updated_at":     "2026-04-19T12:01:30Z",
+				}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	provider := testRepoProviderWithPrefix(t, server, "Cordtus/gh-runner-scaler", "personal-auto")
+	runs, err := provider.ListRecentWorkflowRuns(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("ListRecentWorkflowRuns returned error: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("expected 1 run, got %d", len(runs))
+	}
+	if runs[0].Repo != "Cordtus/gh-runner-scaler" {
+		t.Fatalf("Repo = %q, want Cordtus/gh-runner-scaler", runs[0].Repo)
+	}
+	if repoListCalls != 0 {
+		t.Fatalf("repo-scoped metrics should not list org repos, got %d calls", repoListCalls)
+	}
+}
+
+func TestRepositoryTarget_ListRecentWorkflowRunsEnrichesFailures(t *testing.T) {
+	jobsCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/Cordtus/gh-runner-scaler/actions/runs":
+			writeJSON(t, w, map[string]any{
+				"total_count": 1,
+				"workflow_runs": []map[string]any{{
+					"id":             101,
+					"run_attempt":    2,
+					"name":           "build",
+					"conclusion":     "failure",
+					"run_number":     3,
+					"event":          "push",
+					"head_branch":    "main",
+					"created_at":     "2026-04-19T12:00:00Z",
+					"run_started_at": "2026-04-19T12:01:00Z",
+					"updated_at":     "2026-04-19T12:01:30Z",
+				}},
+			})
+		case "/repos/Cordtus/gh-runner-scaler/actions/runs/101/attempts/2/jobs":
+			jobsCalls++
+			writeJSON(t, w, map[string]any{
+				"total_count": 1,
+				"jobs": []map[string]any{{
+					"id":           501,
+					"name":         "integration",
+					"conclusion":   "failure",
+					"started_at":   "2026-04-19T12:01:05Z",
+					"completed_at": "2026-04-19T12:01:25Z",
+					"steps": []map[string]any{{
+						"name":       "Run tests",
+						"conclusion": "failure",
+					}},
+				}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	provider := testRepoProviderWithPrefix(t, server, "Cordtus/gh-runner-scaler", "personal-auto")
+	runs, err := provider.ListRecentWorkflowRuns(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("ListRecentWorkflowRuns returned error: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("expected 1 run, got %d", len(runs))
+	}
+	run := runs[0]
+	if run.Repo != "Cordtus/gh-runner-scaler" {
+		t.Fatalf("Repo = %q, want Cordtus/gh-runner-scaler", run.Repo)
+	}
+	if run.FailedJob != "integration" || run.FailedStep != "Run tests" || run.FailureReason != "Run tests" {
+		t.Fatalf("unexpected failure enrichment: %+v", run)
+	}
+	if jobsCalls != 1 {
+		t.Fatalf("workflow jobs endpoint calls = %d, want 1", jobsCalls)
+	}
+}
+
 func TestEnrichWorkflowMetrics_EnrichesFailureDetailsFromWorkflowJobs(t *testing.T) {
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -815,6 +1001,23 @@ func testProviderWithPrefix(t *testing.T, server *httptest.Server, prefix string
 	client := gh.NewClient(server.Client()).WithAuthToken("token")
 	client.BaseURL = baseURL
 	return newProvider(client, "test-org", prefix)
+}
+
+func testRepoProviderWithPrefix(t *testing.T, server *httptest.Server, repoFullName, prefix string) *Provider {
+	t.Helper()
+
+	baseURL, err := url.Parse(server.URL + "/")
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+
+	client := gh.NewClient(server.Client()).WithAuthToken("token")
+	client.BaseURL = baseURL
+	provider, err := newRepoProvider(client, repoFullName, prefix)
+	if err != nil {
+		t.Fatalf("new repo provider: %v", err)
+	}
+	return provider
 }
 
 func writeJSON(t *testing.T, w http.ResponseWriter, payload any) {

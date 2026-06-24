@@ -40,8 +40,10 @@ type ScalerConfig struct {
 // Empty fields inherit from the legacy top-level configuration so existing
 // single-class deployments keep working unchanged.
 type RunnerClassConfig struct {
+	Enabled        *bool    `toml:"enabled"`
 	ID             string   `toml:"id"`
 	Org            string   `toml:"org"`
+	Repo           string   `toml:"repo"`
 	Prefix         string   `toml:"prefix"`
 	MaxAutoRunners *int     `toml:"max_auto_runners"`
 	IdleTimeout    Duration `toml:"idle_timeout"`
@@ -56,6 +58,7 @@ type RunnerClassConfig struct {
 type RunnerClass struct {
 	ID             string
 	Org            string
+	Repo           string
 	Prefix         string
 	MaxAutoRunners int
 	IdleTimeout    time.Duration
@@ -110,6 +113,7 @@ type SymlinkConfig struct {
 type CIConfig struct {
 	Provider string       `toml:"provider"`
 	Org      string       `toml:"org"`
+	Repo     string       `toml:"repo"`
 	GitHub   GitHubConfig `toml:"github"`
 }
 
@@ -282,6 +286,14 @@ func validate(cfg *Config) error {
 	if cfg.Scaler.PollInterval.Duration <= 0 {
 		return fmt.Errorf("scaler.poll_interval must be > 0")
 	}
+	if strings.TrimSpace(cfg.CI.Org) != "" && strings.TrimSpace(cfg.CI.Repo) != "" {
+		return fmt.Errorf("ci must set either org or repo, not both")
+	}
+	if cfg.CI.Repo = strings.TrimSpace(cfg.CI.Repo); cfg.CI.Repo != "" {
+		if err := validateRepoFullName("ci.repo", cfg.CI.Repo); err != nil {
+			return err
+		}
+	}
 	if (cfg.Container.LXD.RemoteCert == "") != (cfg.Container.LXD.RemoteKey == "") {
 		return fmt.Errorf("container.lxd.remote_cert and remote_key must be set together")
 	}
@@ -397,9 +409,14 @@ func (cfg *Config) RunnerClassConfigs() ([]RunnerClass, error) {
 		if cfg.Container.Template == "" {
 			return nil, fmt.Errorf("container.template is required")
 		}
+		org, repo := resolveTarget("", "", cfg.CI.Org, cfg.CI.Repo)
+		if err := validateRunnerTarget("ci", org, repo); err != nil {
+			return nil, err
+		}
 		return []RunnerClass{{
 			ID:             "default",
-			Org:            cfg.CI.Org,
+			Org:            org,
+			Repo:           repo,
 			Prefix:         cfg.Scaler.Prefix,
 			MaxAutoRunners: cfg.Scaler.MaxAutoRunners,
 			IdleTimeout:    cfg.Scaler.IdleTimeout.Duration,
@@ -413,9 +430,17 @@ func (cfg *Config) RunnerClassConfigs() ([]RunnerClass, error) {
 
 	classes := make([]RunnerClass, 0, len(cfg.RunnerClasses))
 	for _, raw := range cfg.RunnerClasses {
+		if !runnerClassEnabled(raw.Enabled) {
+			continue
+		}
+		if strings.TrimSpace(raw.Org) != "" && strings.TrimSpace(raw.Repo) != "" {
+			return nil, fmt.Errorf("runner class %s must set either org or repo, not both", strings.TrimSpace(raw.ID))
+		}
+		org, repo := resolveTarget(raw.Org, raw.Repo, cfg.CI.Org, cfg.CI.Repo)
 		class := RunnerClass{
 			ID:             strings.TrimSpace(raw.ID),
-			Org:            firstNonEmpty(raw.Org, cfg.CI.Org),
+			Org:            org,
+			Repo:           repo,
 			Prefix:         firstNonEmpty(raw.Prefix, cfg.Scaler.Prefix),
 			MaxAutoRunners: cfg.Scaler.MaxAutoRunners,
 			IdleTimeout:    cfg.Scaler.IdleTimeout.Duration,
@@ -444,8 +469,8 @@ func (cfg *Config) RunnerClassConfigs() ([]RunnerClass, error) {
 		if class.ID == "" {
 			return nil, fmt.Errorf("runner class id is required")
 		}
-		if class.Org == "" {
-			return nil, fmt.Errorf("runner class %s org is required", class.ID)
+		if err := validateRunnerTarget("runner class "+class.ID, class.Org, class.Repo); err != nil {
+			return nil, err
 		}
 		if class.Prefix == "" {
 			return nil, fmt.Errorf("runner class %s prefix is required", class.ID)
@@ -461,7 +486,23 @@ func (cfg *Config) RunnerClassConfigs() ([]RunnerClass, error) {
 		}
 		classes = append(classes, class)
 	}
+	if len(classes) == 0 {
+		return nil, fmt.Errorf("at least one enabled runner class is required")
+	}
 	return classes, nil
+}
+
+// TargetName returns the configured GitHub target: either an org or owner/repo.
+func (class RunnerClass) TargetName() string {
+	if class.Repo != "" {
+		return class.Repo
+	}
+	return class.Org
+}
+
+// RepoScoped returns true when the class registers runners directly on a repo.
+func (class RunnerClass) RepoScoped() bool {
+	return class.Repo != ""
 }
 
 // CachePrunePolicyFor returns the provider-neutral cleanup settings for a resolved class.
@@ -493,6 +534,52 @@ func cleanLabels(labels []string) []string {
 		}
 	}
 	return result
+}
+
+func runnerClassEnabled(value *bool) bool {
+	return value == nil || *value
+}
+
+func resolveTarget(rawOrg, rawRepo, defaultOrg, defaultRepo string) (string, string) {
+	rawRepo = strings.TrimSpace(rawRepo)
+	if rawRepo != "" {
+		return "", rawRepo
+	}
+	rawOrg = strings.TrimSpace(rawOrg)
+	if rawOrg != "" {
+		return rawOrg, ""
+	}
+	defaultRepo = strings.TrimSpace(defaultRepo)
+	if defaultRepo != "" {
+		return "", defaultRepo
+	}
+	return strings.TrimSpace(defaultOrg), ""
+}
+
+func validateRunnerTarget(name, org, repo string) error {
+	if org != "" && repo != "" {
+		return fmt.Errorf("%s must set either org or repo, not both", name)
+	}
+	if org == "" && repo == "" {
+		return fmt.Errorf("%s org or repo is required", name)
+	}
+	if repo != "" {
+		return validateRepoFullName(name+".repo", repo)
+	}
+	return nil
+}
+
+func validateRepoFullName(name, repo string) error {
+	owner, repoName, ok := strings.Cut(repo, "/")
+	if !ok ||
+		strings.TrimSpace(owner) == "" ||
+		strings.TrimSpace(repoName) == "" ||
+		strings.TrimSpace(owner) != owner ||
+		strings.TrimSpace(repoName) != repoName ||
+		strings.Contains(repoName, "/") {
+		return fmt.Errorf("%s must be in owner/name form", name)
+	}
+	return nil
 }
 
 func firstNonEmpty(values ...string) string {

@@ -30,7 +30,10 @@ installs, browser jobs, and polyglot workloads.
 gh auth login
 ```
 
-2. A GitHub org/user where the self-hosted runners are visible.
+2. A GitHub org/user where the self-hosted runners are visible. The load-test
+   repo must be covered by the scaler target: create it under the configured
+   `ci.org`, or configure the load-test repo itself as `ci.repo` or as a
+   repo-scoped runner class.
 
 3. The scaler host already running the latest `gh-runner-scaler` build.
 
@@ -43,19 +46,21 @@ git config --global user.email "you@example.com"
 
 5. The test repo's default branch must already contain the workflow files you
    want to dispatch. `dispatch-load.sh` uses `gh workflow run` without `--ref`,
-   so GitHub dispatches the default-branch version of each workflow.
+   so GitHub dispatches the default-branch version of each workflow. The
+   bundled workflows use `runs-on: [self-hosted, linux, x64]`; add your
+   runner-class label there first if the target class requires one.
 
 6. Browser profiles assume the runner template already has the pinned
    Playwright browser bundle installed at `/home/runner/.cache/ms-playwright`.
-   If you are testing Axionic workloads, follow the main README's template
-   bootstrap step for `playwright@1.58.2 install --with-deps chromium` first.
+   If you are testing browser workloads, follow the main README's template
+   bootstrap step for the Playwright version pinned by the workload repo first.
 
 ## Recommended Test Sequence
 
 1. Seed the test repo:
 
 ```bash
-./loadtest/create-test-repo.sh Axionic-Labs/runner-load-lab /tmp/runner-load-lab --push
+./loadtest/create-test-repo.sh ExampleOrg/runner-load-lab /tmp/runner-load-lab --push
 ```
 
 2. Start server-side evidence collection on the scaler host with root or
@@ -70,16 +75,16 @@ git config --global user.email "you@example.com"
 3. Warm caches:
 
 ```bash
-./loadtest/dispatch-load.sh Axionic-Labs/runner-load-lab cache-warm
+./loadtest/dispatch-load.sh ExampleOrg/runner-load-lab cache-warm
 ```
 
 4. Run mixed profiles:
 
 ```bash
-./loadtest/dispatch-load.sh Axionic-Labs/runner-load-lab queue-burst
-./loadtest/dispatch-load.sh Axionic-Labs/runner-load-lab steady-polyglot
-./loadtest/dispatch-load.sh Axionic-Labs/runner-load-lab browser-spike
-./loadtest/dispatch-load.sh Axionic-Labs/runner-load-lab mixed-peak
+./loadtest/dispatch-load.sh ExampleOrg/runner-load-lab queue-burst
+./loadtest/dispatch-load.sh ExampleOrg/runner-load-lab steady-polyglot
+./loadtest/dispatch-load.sh ExampleOrg/runner-load-lab browser-spike
+./loadtest/dispatch-load.sh ExampleOrg/runner-load-lab mixed-peak
 ```
 
 ## Profiles

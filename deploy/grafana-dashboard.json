@@ -11,7 +11,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-axionic-logs"
+        "uid": "loki"
       },
       "fieldConfig": {
         "defaults": {
@@ -67,7 +67,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-axionic-logs"
+        "uid": "loki"
       },
       "fieldConfig": {
         "defaults": {
@@ -123,7 +123,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-axionic-logs"
+        "uid": "loki"
       },
       "fieldConfig": {
         "defaults": {
@@ -179,7 +179,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-axionic-logs"
+        "uid": "loki"
       },
       "fieldConfig": {
         "defaults": {
@@ -235,7 +235,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-axionic-logs"
+        "uid": "loki"
       },
       "fieldConfig": {
         "defaults": {
@@ -292,7 +292,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-axionic-logs"
+        "uid": "loki"
       },
       "fieldConfig": {
         "defaults": {
@@ -348,7 +348,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-axionic-logs"
+        "uid": "loki"
       },
       "fieldConfig": {
         "defaults": {
@@ -405,7 +405,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-axionic-logs"
+        "uid": "loki"
       },
       "fieldConfig": {
         "defaults": {
@@ -462,7 +462,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-axionic-logs"
+        "uid": "loki"
       },
       "fieldConfig": {
         "defaults": {
@@ -544,7 +544,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-axionic-logs"
+        "uid": "loki"
       },
       "fieldConfig": {
         "defaults": {
@@ -629,7 +629,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-axionic-logs"
+        "uid": "loki"
       },
       "fieldConfig": {
         "defaults": {
@@ -697,7 +697,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-axionic-logs"
+        "uid": "loki"
       },
       "fieldConfig": {
         "defaults": {
@@ -765,7 +765,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-axionic-logs"
+        "uid": "loki"
       },
       "fieldConfig": {
         "defaults": {
@@ -900,7 +900,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-axionic-logs"
+        "uid": "loki"
       },
       "fieldConfig": {
         "defaults": {
@@ -1013,7 +1013,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-axionic-logs"
+        "uid": "loki"
       },
       "fieldConfig": {
         "defaults": {
@@ -1126,7 +1126,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-axionic-logs"
+        "uid": "loki"
       },
       "fieldConfig": {
         "defaults": {
@@ -1193,7 +1193,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-axionic-logs"
+        "uid": "loki"
       },
       "fieldConfig": {
         "defaults": {

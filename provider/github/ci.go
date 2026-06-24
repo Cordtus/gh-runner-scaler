@@ -24,6 +24,7 @@ const (
 type Provider struct {
 	client                *gh.Client
 	org                   string
+	repo                  string
 	prefix                string
 	validator             *WebhookValidator
 	mu                    sync.Mutex
@@ -61,10 +62,16 @@ func New(token, org, prefix string) *Provider {
 	return newProvider(client, org, prefix)
 }
 
+// NewForRepo creates a GitHub CI provider for repository-scoped runners.
+func NewForRepo(token, repoFullName, prefix string) (*Provider, error) {
+	client := gh.NewClient(nil).WithAuthToken(token)
+	return newRepoProvider(client, repoFullName, prefix)
+}
+
 func newProvider(client *gh.Client, org, prefix string) *Provider {
 	return &Provider{
 		client:                client,
-		org:                   org,
+		org:                   strings.TrimSpace(org),
 		prefix:                prefix,
 		runnerCacheTTL:        defaultRunnerCacheTTL,
 		runnerStaleTTL:        defaultRunnerStaleTTL,
@@ -74,7 +81,17 @@ func newProvider(client *gh.Client, org, prefix string) *Provider {
 	}
 }
 
-// ShareRunnerCacheWith lets providers for the same org reuse a recent runner inventory.
+func newRepoProvider(client *gh.Client, repoFullName, prefix string) (*Provider, error) {
+	owner, repo, ok := splitRepoFullName(repoFullName)
+	if !ok {
+		return nil, fmt.Errorf("repo target must be in owner/name form: %s", repoFullName)
+	}
+	p := newProvider(client, owner, prefix)
+	p.repo = repo
+	return p, nil
+}
+
+// ShareRunnerCacheWith lets providers for the same GitHub target reuse a recent runner inventory.
 func (p *Provider) ShareRunnerCacheWith(other *Provider) {
 	if other == nil || other == p {
 		return
@@ -106,7 +123,7 @@ func (p *Provider) SetRunnerStaleTTL(ttl time.Duration) {
 }
 
 // SetWorkflowRepoBatchSize bounds workflow metrics collection to a repo subset per interval.
-// Zero disables the cap and scans every repo in the org.
+// Zero disables the cap and scans every repo for org-scoped targets.
 func (p *Provider) SetWorkflowRepoBatchSize(size int) {
 	if size < 0 {
 		size = 0
@@ -116,7 +133,7 @@ func (p *Provider) SetWorkflowRepoBatchSize(size int) {
 	p.workflowRepoBatchSize = size
 }
 
-// ListRunners returns all runners registered with the org.
+// ListRunners returns all runners registered with the configured GitHub target.
 func (p *Provider) ListRunners(ctx context.Context) ([]domain.Runner, error) {
 	runners, _, err := p.listRunners(ctx, false)
 	return runners, err
@@ -164,7 +181,7 @@ func (p *Provider) fetchRunners(ctx context.Context) ([]domain.Runner, error) {
 	}
 	var runners []domain.Runner
 	for {
-		result, resp, err := p.client.Actions.ListOrganizationRunners(ctx, p.org, opts)
+		result, resp, err := p.listTargetRunners(ctx, opts)
 		if err != nil {
 			return nil, fmt.Errorf("listing runners: %w", err)
 		}
@@ -189,6 +206,13 @@ func (p *Provider) fetchRunners(ctx context.Context) ([]domain.Runner, error) {
 		opts.Page = resp.NextPage
 	}
 	return runners, nil
+}
+
+func (p *Provider) listTargetRunners(ctx context.Context, opts *gh.ListRunnersOptions) (*gh.Runners, *gh.Response, error) {
+	if p.repo != "" {
+		return p.client.Actions.ListRunners(ctx, p.org, p.repo, opts)
+	}
+	return p.client.Actions.ListOrganizationRunners(ctx, p.org, opts)
 }
 
 func (p *Provider) storeRunnerCache(runners []domain.Runner, generation uint64, fetchedAt time.Time) {
@@ -265,7 +289,7 @@ func (p *Provider) GetRegistrationToken(ctx context.Context) (string, error) {
 		return token, nil
 	}
 
-	token, _, err := p.client.Actions.CreateOrganizationRegistrationToken(ctx, p.org)
+	token, _, err := p.createTargetRegistrationToken(ctx)
 	if err != nil {
 		return "", fmt.Errorf("creating registration token: %w", err)
 	}
@@ -273,6 +297,13 @@ func (p *Provider) GetRegistrationToken(ctx context.Context) (string, error) {
 	p.storeRegistrationToken(value, tokenExpiresAt(token.ExpiresAt))
 	p.SuspendRunnerInventoryCache()
 	return value, nil
+}
+
+func (p *Provider) createTargetRegistrationToken(ctx context.Context) (*gh.RegistrationToken, *gh.Response, error) {
+	if p.repo != "" {
+		return p.client.Actions.CreateRegistrationToken(ctx, p.org, p.repo)
+	}
+	return p.client.Actions.CreateOrganizationRegistrationToken(ctx, p.org)
 }
 
 // GetRemoveToken returns a short-lived runner removal token.
@@ -290,7 +321,7 @@ func (p *Provider) GetRemoveToken(ctx context.Context) (string, error) {
 		return token, nil
 	}
 
-	token, _, err := p.client.Actions.CreateOrganizationRemoveToken(ctx, p.org)
+	token, _, err := p.createTargetRemoveToken(ctx)
 	if err != nil {
 		return "", fmt.Errorf("creating remove token: %w", err)
 	}
@@ -300,9 +331,16 @@ func (p *Provider) GetRemoveToken(ctx context.Context) (string, error) {
 	return value, nil
 }
 
-// DeleteRunner removes a runner by ID from the org.
+func (p *Provider) createTargetRemoveToken(ctx context.Context) (*gh.RemoveToken, *gh.Response, error) {
+	if p.repo != "" {
+		return p.client.Actions.CreateRemoveToken(ctx, p.org, p.repo)
+	}
+	return p.client.Actions.CreateOrganizationRemoveToken(ctx, p.org)
+}
+
+// DeleteRunner removes a runner by ID from the configured GitHub target.
 func (p *Provider) DeleteRunner(ctx context.Context, runnerID int64) error {
-	_, err := p.client.Actions.RemoveOrganizationRunner(ctx, p.org, runnerID)
+	_, err := p.removeTargetRunner(ctx, runnerID)
 	if err != nil {
 		return fmt.Errorf("deleting runner %d: %w", runnerID, err)
 	}
@@ -310,8 +348,18 @@ func (p *Provider) DeleteRunner(ctx context.Context, runnerID int64) error {
 	return nil
 }
 
-// RegistrationURL returns the org URL for runner config.sh --url.
+func (p *Provider) removeTargetRunner(ctx context.Context, runnerID int64) (*gh.Response, error) {
+	if p.repo != "" {
+		return p.client.Actions.RemoveRunner(ctx, p.org, p.repo, runnerID)
+	}
+	return p.client.Actions.RemoveOrganizationRunner(ctx, p.org, runnerID)
+}
+
+// RegistrationURL returns the GitHub URL for runner config.sh --url.
 func (p *Provider) RegistrationURL() string {
+	if p.repo != "" {
+		return "https://github.com/" + p.org + "/" + p.repo
+	}
 	return "https://github.com/" + p.org
 }
 
@@ -413,7 +461,7 @@ func tokenExpiresAt(ts *gh.Timestamp) time.Time {
 	return ts.Time
 }
 
-// ListRecentWorkflowRuns returns completed workflow runs across all org repos.
+// ListRecentWorkflowRuns returns completed workflow runs for the configured GitHub target.
 func (p *Provider) ListRecentWorkflowRuns(ctx context.Context, perRepo int) ([]domain.WorkflowMetrics, error) {
 	runs, err := p.ListRecentWorkflowRunsShallow(ctx, perRepo)
 	if err != nil || len(runs) == 0 {
@@ -433,9 +481,9 @@ func (p *Provider) ListRecentWorkflowRunsShallow(ctx context.Context, perRepo in
 		return nil, nil
 	}
 
-	repos, err := p.listOrgRepos(ctx)
+	repos, err := p.listWorkflowRepos(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("listing org repos: %w", err)
+		return nil, fmt.Errorf("listing workflow repos: %w", err)
 	}
 	repos = p.workflowRepoBatch(repos)
 
@@ -469,7 +517,7 @@ func (p *Provider) ListRecentWorkflowRunsShallow(ctx context.Context, perRepo in
 			results = append(results, domain.WorkflowMetrics{
 				RunID:       run.GetID(),
 				RunAttempt:  run.GetRunAttempt(),
-				Repo:        repo,
+				Repo:        p.metricRepoName(repo),
 				Workflow:    run.GetName(),
 				Conclusion:  run.GetConclusion(),
 				DurationS:   durationS,
@@ -481,6 +529,13 @@ func (p *Provider) ListRecentWorkflowRunsShallow(ctx context.Context, perRepo in
 		}
 	}
 	return results, nil
+}
+
+func (p *Provider) listWorkflowRepos(ctx context.Context) ([]string, error) {
+	if p.repo != "" {
+		return []string{p.repo}, nil
+	}
+	return p.listOrgRepos(ctx)
 }
 
 // EnrichWorkflowMetrics hydrates failure details only for fresh failed workflow runs.
@@ -498,7 +553,7 @@ func (p *Provider) EnrichWorkflowMetrics(ctx context.Context, runs []domain.Work
 
 		failedJob, failedStep, failureReason, err := p.hydrateWorkflowFailureDetails(
 			ctx,
-			run.Repo,
+			p.apiRepoName(run.Repo),
 			run.RunID,
 			run.RunAttempt,
 			run.Conclusion,
@@ -580,6 +635,35 @@ func (p *Provider) listRepositoryWorkflowRuns(ctx context.Context, repo string, 
 		}
 		opts.Page = resp.NextPage
 	}
+}
+
+func (p *Provider) metricRepoName(repo string) string {
+	if p.repo != "" {
+		return p.targetName()
+	}
+	return repo
+}
+
+func (p *Provider) apiRepoName(repo string) string {
+	if owner, name, ok := splitRepoFullName(repo); ok && strings.EqualFold(owner, p.org) {
+		return name
+	}
+	return repo
+}
+
+func (p *Provider) targetName() string {
+	if p.repo != "" {
+		return p.org + "/" + p.repo
+	}
+	return p.org
+}
+
+func splitRepoFullName(repo string) (string, string, bool) {
+	owner, name, ok := strings.Cut(strings.TrimSpace(repo), "/")
+	if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
+		return "", "", false
+	}
+	return owner, name, true
 }
 
 func (p *Provider) workflowRepoBatch(repos []string) []string {

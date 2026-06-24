@@ -1,6 +1,64 @@
 # gh-runner-scaler
 
-Auto-scaler for GitHub Actions self-hosted runners on LXC containers. Configurable number of persistent runners, scaling by coping a non-running LXC 'template' container if persistent runners are busy, and tears them down after idle timeout or job completion.
+Auto-scaler for GitHub Actions self-hosted runners on LXC containers. It keeps a configurable pool of runners, clones stopped LXD template containers when more capacity is needed, and tears managed runners down after job completion or an idle timeout.
+
+## Deploy Your Own Instance
+
+Use this path for a first deployment. The detailed reference sections below explain each part.
+
+1. Prepare an Ubuntu Linux host with LXD, ZFS storage, Git, curl, and the Go version from `go.mod`.
+2. Create a stopped LXD template named `gh-runner-template` with the GitHub Actions runner files installed under `/home/runner`.
+3. Create a GitHub token with runner-management access for your target organization or repository.
+4. Copy `config.example.toml` to `config.toml`, then set exactly one GitHub target:
+   - `ci.org = "YourOrg"` for organization-scoped runners
+   - `ci.repo = "owner/repo"` for one repository-scoped runner target
+5. Keep `[metrics].enabled = false` until you have Loki credentials. Metrics are optional.
+6. Build and install the service:
+
+```bash
+go build -o gh-runner-scaler ./cmd/scaler/
+sudo install -D -m 0755 gh-runner-scaler /usr/local/bin/gh-runner-scaler
+sudo install -d /etc/gh-runner-scaler /var/lib/gh-runner-scaler/state
+sudo install -m 0644 config.toml /etc/gh-runner-scaler/config.toml
+sudo install -m 0644 deploy/systemd/gh-runner-scaler.service /etc/systemd/system/gh-runner-scaler.service
+```
+
+7. Create `/etc/gh-runner-scaler/env` with the required secrets:
+
+```bash
+sudo install -m 0600 /dev/null /etc/gh-runner-scaler/env
+sudoedit /etc/gh-runner-scaler/env
+```
+
+At minimum:
+
+```text
+GH_SCALER_GITHUB_TOKEN=...
+GH_WEBHOOK_SECRET=...
+```
+
+8. Run one active reconcile before enabling the daemon:
+
+```bash
+sudo sh -c 'set -a; . /etc/gh-runner-scaler/env; set +a; exec /usr/local/bin/gh-runner-scaler reconcile --config /etc/gh-runner-scaler/config.toml'
+```
+
+`reconcile` is not a dry-run. It may create or clean up managed runners and LXD containers according to the configured target, labels, and scale limits.
+
+9. Start and verify:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now gh-runner-scaler.service
+sudo systemctl --no-pager --full status gh-runner-scaler.service
+curl http://127.0.0.1:9876/healthz
+```
+
+10. Add the same labels from your config to workflow jobs, for example:
+
+```yaml
+runs-on: [self-hosted, linux, x64, runner-class-default]
+```
 
 ## Architecture
 
@@ -45,7 +103,7 @@ clone template -> start -> wait for boot (90s max)
 
 Deregistration uses two cleanup paths: `config.sh remove` inside the runner, then a GitHub API DELETE when GitHub no longer reports the runner as busy. Cleanup keeps going after service-stop or deregistration errors because deleting the container is the authoritative local cleanup step. If the container delete succeeds, the reconciler treats that runner as removed for capacity and next-name decisions, so a replacement can still be created even when cleanup logged warnings.
 
-**Webhook** is the primary event driver. `workflow_job.queued` and `workflow_job.completed` events trigger the scaler within 2 seconds (debounced). When `[[runner_classes]]` are configured, the daemon routes the trigger to the class whose `match_labels` are present in the job's `runs-on` labels. `push` events to tracked repos trigger cache volume syncs via `lxc exec` on a running container when the push targets that repo's default branch.
+**Webhook** is the primary event driver. `workflow_job.queued` and `workflow_job.completed` events trigger the scaler within 2 seconds (debounced). When `[[runner_classes]]` are configured, the daemon first filters classes by the event repository's org or exact repo target, then routes the trigger to classes whose `match_labels` are present in the job's `runs-on` labels. `push` events to tracked repos trigger cache volume syncs via `lxc exec` on a running container when the push targets that repo's default branch.
 
 **Poll loop** runs every `poll_interval` as a safety net in case a webhook is missed.
 
@@ -61,7 +119,7 @@ The binary is statically compiled with no runtime dependencies. The host needs:
 |------------|----------|---------|
 | LXD (snap) | Y | Container runtime |
 | ZFS | Y | Fast same-pool clones for scale-up |
-| GitHub classic PAT | Y | Runner management, webhook events |
+| GitHub token | Y | Runner management, webhook events |
 | Network access from GitHub | If webhook enabled | Receives `workflow_job` and `push` events |
 | Grafana + Loki, or Grafana Cloud with Loki enabled | If metrics enabled | Dashboard visualization |
 
@@ -96,7 +154,7 @@ lxc config set core.https_address :8443
 lxc remote add <name> <host>:8443
 ```
 
-Set `container.lxd.remote` in `config.toml` to the remote name (e.g. `"nodev2"`). The scaler resolves the address and TLS client certs from the standard LXD config at `~/.config/lxc/`.
+Set `container.lxd.remote` in `config.toml` to the remote name. The scaler resolves the address and TLS client certs from the standard LXD config at `~/.config/lxc/`.
 
 Alternatively, set `container.lxd.remote_url` directly and provide cert/key paths via `container.lxd.remote_cert` and `container.lxd.remote_key`.
 
@@ -148,8 +206,8 @@ chown -R runner:runner /home/runner
 # Install additional tools your workflows need (node, python, etc.)
 #
 # If any jobs use Playwright on self-hosted runners, pre-install the pinned
-# browser bundle on the template so clones do not fail on first use. For
-# Spectra-App this currently means Playwright 1.58.2 plus Chromium:
+# browser bundle on the template so clones do not fail on first use. The
+# bundled load-test repo currently pins Playwright 1.58.2 plus Chromium:
 su - runner -c \
   'PLAYWRIGHT_BROWSERS_PATH=/home/runner/.cache/ms-playwright npx playwright@1.58.2 install --with-deps chromium'
 ```
@@ -163,15 +221,20 @@ lxc stop gh-runner-template
 
 Do **not** run `config.sh` on the template -- each ephemeral clone configures itself with a fresh registration token.
 
-### GitHub PAT
+### GitHub Token
 
-Create a classic Personal Access Token at https://github.com/settings/tokens:
+Use a GitHub App installation token, GitHub App user token, fine-grained PAT, or classic PAT that can call the runner endpoints for the target you configure.
 
-| Scope | Purpose |
-|-------|---------|
-| `repo` | Read workflow job status |
-| `manage_runners:org` | Register and deregister runners |
-| `admin:org_hook` | Create org webhooks (initial setup only) |
+For fine-grained tokens:
+
+| Target | Permission | Access | Purpose |
+|--------|------------|--------|---------|
+| Organization runners | Self-hosted runners | Read and write | List, register, and deregister org runners |
+| Repository runners | Repository administration | Write | List, register, and deregister repo runners |
+| Workflow metrics | Repository actions | Read | Read workflow run and job status |
+| Org workflow metrics | Repository metadata | Read | List repositories in the org |
+
+For a classic PAT against org-scoped runners, use `admin:org`, plus `repo` when private repository workflow metrics must be read. For repo-scoped runners, the token must have repository admin access; a classic PAT needs `repo`.
 
 ### Webhook Network Access
 
@@ -184,15 +247,26 @@ Options:
 
 GitHub publishes webhook source IPs via the [meta API](https://api.github.com/meta) under the `hooks` key.
 
+Configure the webhook on the same org or repository targeted by `ci.org`, `ci.repo`, or each runner class:
+
+| GitHub webhook field | Value |
+|----------------------|-------|
+| Payload URL | `https://runner-host.example.com/` or a proxy path that rewrites to `/` |
+| Content type | `application/json` |
+| Secret | The same value as `GH_WEBHOOK_SECRET` |
+| Events | `workflow_job`; also `push` if `[webhook.sync_repos]` is used |
+
+The daemon accepts webhook POSTs at `/`. `GET /healthz`, `GET /statusz`, and authenticated `GET /logs` share the same listener.
+
 ### GitHub API Use
 
 The scaler uses the GitHub Actions API for platform state that the runner host cannot infer locally:
 
-- `GET /orgs/<org>/actions/runners`: runner inventory for reconcile decisions and runner-capacity metrics. This is the only authoritative source for whether GitHub currently sees a runner as online, busy, idle, or offline, and it provides runner IDs needed for API cleanup.
-- Organization registration/removal token APIs: short-lived tokens for registering new ephemeral runners and removing completed ones.
+- `GET /orgs/<org>/actions/runners` or `GET /repos/<owner>/<repo>/actions/runners`: runner inventory for reconcile decisions and runner-capacity metrics. This is the only authoritative source for whether GitHub currently sees a runner as online, busy, idle, or offline, and it provides runner IDs needed for API cleanup.
+- Organization or repository registration/removal token APIs: short-lived tokens for registering new ephemeral runners and removing completed ones.
 - Workflow run/job APIs: optional completed-workflow metrics and failure enrichment for the Grafana dashboard.
 
-Reconcile, metrics, and runner-class providers for the same org share a very short runner-inventory cache. That collapses webhook bursts, immediate metrics collection, and multi-class reconcile passes into a single `GET /orgs/<org>/actions/runners` request when they happen within the same few seconds, while regular poll intervals still refresh from GitHub before making scale-up/scale-down decisions. During runner registration or removal, reconcile cache hits are suspended and mutation-period snapshots are cleared so lifecycle decisions do not use inventory fetched before GitHub has caught up. Metrics may reuse a bounded stale runner snapshot during transient GitHub API or rate-limit failures, and the metrics payload marks `runner_inventory_stale`, `runner_inventory_age_s`, `runner_inventory_at`, and `runner_inventory_error` so the dashboard can distinguish stale capacity data from live GitHub state.
+Reconcile, metrics, and runner-class providers for the same GitHub target share a very short runner-inventory cache. That collapses webhook bursts, immediate metrics collection, and multi-class reconcile passes into a single runner inventory request when they happen within the same few seconds, while regular poll intervals still refresh from GitHub before making scale-up/scale-down decisions. During runner registration or removal, reconcile cache hits are suspended and mutation-period snapshots are cleared so lifecycle decisions do not use inventory fetched before GitHub has caught up. Metrics may reuse a bounded stale runner snapshot during transient GitHub API or rate-limit failures, and the metrics payload marks `runner_inventory_stale`, `runner_inventory_age_s`, `runner_inventory_at`, and `runner_inventory_error` so the dashboard can distinguish stale capacity data from live GitHub state.
 
 Registration and removal tokens are also cached until close to their GitHub-provided `expires_at` time. This avoids repeated token POSTs during adjacent scale-ups or scale-downs; each runner still receives the same valid short-lived token through the normal `config.sh` flow.
 
@@ -216,7 +290,7 @@ For self-managed Loki, use the Loki push URL and credentials configured for your
 
 ## Build
 
-Requires Go 1.23+.
+Requires the Go version declared in `go.mod`.
 
 ```bash
 go build -o gh-runner-scaler ./cmd/scaler/
@@ -236,7 +310,7 @@ CI runs `gofmt`, `go vet`, `go test`, and `go build` on pushes and pull requests
 
 ### Config File (TOML)
 
-Copy `config.example.toml` and edit. Every setting has a sensible default except `ci.org`, unless each configured runner class sets its own `org`.
+Copy `config.example.toml` and edit. Every setting has a sensible default except the GitHub target: set either `ci.org` for org-scoped runners or `ci.repo` for one repository-scoped runner target, unless each configured runner class sets its own target.
 
 ```bash
 cp config.example.toml config.toml
@@ -250,7 +324,7 @@ cp config.example.toml config.toml
 | `max_auto_runners` | `6` | Max ephemeral containers |
 | `idle_timeout` | `300s` | Idle time before teardown |
 | `poll_interval` | `30s` | How often the reconciler checks state |
-| `labels` | `self-hosted,linux,x64,runner-class-axionic` | Runner labels (comma-separated) |
+| `labels` | `self-hosted,linux,x64` | Runner labels (comma-separated) |
 | `runner_work_dir` | `_work` | Working directory passed to `config.sh` |
 
 #### Container
@@ -307,7 +381,7 @@ When cache is enabled, the scaler also prepares `/cache/buildx` and writes `RUNN
 ```bash
 CACHE_ROOT="${RUNNER_BUILDX_CACHE_ROOT:-/cache/buildx}/${GITHUB_REPOSITORY#*/}"
 CACHE_BRANCH="${GITHUB_REF_NAME//\//-}"
-CACHE_IMAGE="remote-hooks"
+CACHE_IMAGE="example-image"
 CACHE_DIR="$CACHE_ROOT/$CACHE_BRANCH/$CACHE_IMAGE"
 CACHE_NEXT="$CACHE_DIR-next"
 mkdir -p "$CACHE_ROOT/$CACHE_BRANCH"
@@ -340,15 +414,16 @@ The scaler writes these cache env values only when it configures a managed runne
 | Key | Default | Description |
 |-----|---------|-------------|
 | `provider` | `github` | CI platform module (`github`) |
-| `org` | (required) | GitHub organization name |
+| `org` | | GitHub organization name for org-scoped runners |
+| `repo` | | GitHub `owner/name` repository target for repo-scoped runners |
 
 GitHub-specific settings under `[ci.github]` are currently empty -- token and webhook secret are set via environment variables.
 
 #### Runner Classes: `[[runner_classes]]`
 
-Runner classes let one daemon manage multiple logical runner types without splitting into separate deployments. If no `[[runner_classes]]` entries are present, the daemon synthesizes one `default` class from the existing `[scaler]`, `[container]`, `[cache]`, and `[ci]` settings, so current Axionic-style single-pool configs keep working.
+Runner classes let one daemon manage multiple logical runner types without splitting into separate deployments. If no `[[runner_classes]]` entries are present, the daemon synthesizes one `default` class from the existing `[scaler]`, `[container]`, `[cache]`, and `[ci]` settings, so single-pool configs do not need a runner class block.
 
-Each class can override the inherited org, runner prefix, labels, scale cap, idle timeout, work directory, LXD template, and cache profile:
+Each class can override the inherited target, runner prefix, labels, scale cap, idle timeout, work directory, LXD template, and cache profile. Set `enabled = false` to keep a class in config without polling its GitHub APIs or creating runners.
 
 ```toml
 [[runner_classes]]
@@ -374,6 +449,14 @@ idle_timeout = "300s"
 runner_work_dir = "_work"
 template = "gh-runner-template-rust"
 cache_profile = "rust"
+
+[[runner_classes]]
+id = "personal-gh-runner-scaler"
+repo = "octo-user/example-repo"
+prefix = "personal-runner"
+labels = "self-hosted,linux,x64,runner-class-personal"
+match_labels = ["self-hosted", "linux", "x64", "runner-class-personal"]
+max_auto_runners = 2
 ```
 
 Use distinctive labels in both `labels` and workflow `runs-on` values so GitHub schedules jobs onto the intended class:
@@ -382,7 +465,9 @@ Use distinctive labels in both `labels` and workflow `runs-on` values so GitHub 
 runs-on: [self-hosted, linux, x64, runner-class-rust]
 ```
 
-`match_labels` controls router wakeups. If a queued job has no labels or no class matches, the daemon falls back to triggering all classes rather than dropping the event.
+`match_labels` controls router wakeups. If a queued job has no labels or no class matches, the daemon falls back to triggering all classes for that GitHub target rather than dropping the event.
+
+Webhook routing filters by target before label matching. An org-scoped class only receives events from repositories owned by that org, and a repo-scoped class only receives events from that exact repository. Personal GitHub repositories cannot share one owner-wide runner pool; add one repo-scoped runner class per personal repository that should use this scaler.
 
 #### Cache Profiles: `[cache_profiles.<name>]`
 
@@ -391,7 +476,7 @@ Cache profiles are reusable cache definitions for runner classes. They use the s
 ```toml
 [cache_profiles.rust]
 enabled = true
-pool = "pool9"
+pool = "runner-pool"
 volume = "runner-cache-rust"
 
 [cache_profiles.rust.prune]
@@ -453,14 +538,14 @@ Example:
 
 ```bash
 curl -H "Authorization: Bearer $GH_SCALER_LOG_TOKEN" \
-  "http://runner-host:9876/logs?runner=gh-runner-auto-3&repo=Axionic-Labs/axionic-ui&commit=abc1234"
+  "http://runner-host:9876/logs?runner=gh-runner-auto-3&repo=ExampleOrg/example-repo&commit=abc1234"
 ```
 
 #### Metrics: `[metrics]`
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `enabled` | `true` | Push metrics to backend |
+| `enabled` | `true` | Push metrics to backend. `config.example.toml` sets this to `false` until Loki is configured. |
 | `interval` | `60s` | Collection and push interval |
 | `collect_workflows` | `true` | Include recent workflow run durations and outcomes |
 | `workflow_repo_batch_size` | `25` | Max repos scanned per workflow-metrics interval (`0` = scan all repos) |
@@ -475,7 +560,7 @@ When metrics are enabled, the daemon also derives two additional observability s
 - `lifecycle-metrics`: queue wait, runner reuse, and scale-down-to-next-scale-up analytics
 - `issue-events`: warning/error events from the scaler itself for issue-count panels
 
-Workflow metrics are collected in two phases to control GitHub API use. The provider first lists recent completed workflow runs without job/step detail, filters out runs already delivered to Loki, and only then enriches fresh failed runs with failed job, failed step, and failure reason. The org repository list is cached for 10 minutes, and `workflow_repo_batch_size` rotates through repos across collection intervals. With the default `25`, a large org is scanned in bounded chunks instead of every metrics tick.
+Workflow metrics are collected in two phases to control GitHub API use. The provider first lists recent completed workflow runs without job/step detail, filters out runs already delivered to Loki, and only then enriches fresh failed runs with failed job, failed step, and failure reason. For org-scoped targets, the repository list is cached for 10 minutes and `workflow_repo_batch_size` rotates through repos across collection intervals. Repo-scoped targets query only their configured repository. With the default `25`, a large org is scanned in bounded chunks instead of every metrics tick.
 
 For lower GitHub API load, keep the webhook enabled so the poll loop can remain a safety net, keep `[metrics].interval` at or above the default `60s`, leave `workflow_repo_batch_size` bounded for large orgs, and disable `collect_workflows` if dashboard workflow history is not needed.
 
@@ -493,7 +578,7 @@ Filesystem-specific: `[state.filesystem]`
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `dir` | `.state` | Directory for per-container timestamp files, workflow/issue delivery caches, and persisted `/logs` history |
+| `dir` | `.state` | Directory for per-container timestamp files, workflow/issue delivery caches, and persisted `/logs` history. `config.example.toml` uses `/var/lib/gh-runner-scaler/state` for systemd deployments. |
 
 For production, use an absolute path like `/var/lib/gh-runner-scaler/state`.
 
@@ -511,7 +596,7 @@ Secrets are **never** stored in the config file. Set them as environment variabl
 
 | Variable | Required | Purpose |
 |----------|----------|---------|
-| `GH_SCALER_GITHUB_TOKEN` | Y | GitHub PAT for runner management |
+| `GH_SCALER_GITHUB_TOKEN` | Y | GitHub token for runner management |
 | `GH_WEBHOOK_SECRET` | If webhook enabled | HMAC secret for signature verification |
 | `GH_SCALER_LOG_TOKEN` | Optional | Dedicated bearer token for `GET /logs` (falls back to `GH_WEBHOOK_SECRET`) |
 | `LOKI_PUSH_URL` | If metrics enabled | Grafana Loki push endpoint |
@@ -534,12 +619,12 @@ sudo cp config.toml /etc/gh-runner-scaler/config.toml
 
 ```bash
 sudo tee /etc/gh-runner-scaler/env > /dev/null << 'EOF'
-GH_SCALER_GITHUB_TOKEN=ghp_...
+GH_SCALER_GITHUB_TOKEN=...
 GH_WEBHOOK_SECRET=your-webhook-secret
-GH_SCALER_LOG_TOKEN=separate-read-token
-LOKI_PUSH_URL=https://logs-prod-XXX.grafana.net/loki/api/v1/push
-LOKI_USERNAME=your-loki-instance-id
-GRAFANA_CLOUD_API_KEY=glc_...
+# GH_SCALER_LOG_TOKEN=separate-read-token
+# LOKI_PUSH_URL=https://logs-prod-XXX.grafana.net/loki/api/v1/push
+# LOKI_USERNAME=your-loki-instance-id
+# GRAFANA_CLOUD_API_KEY=...
 EOF
 sudo chmod 600 /etc/gh-runner-scaler/env
 ```
@@ -584,9 +669,9 @@ journalctl -u gh-runner-scaler -f
 Expected output on a healthy start:
 
 ```
-level=INFO msg="daemon started" poll_interval=30s webhook=true metrics=true
+level=INFO msg="daemon started" poll_interval=30s webhook=true metrics=false
 level=INFO msg="webhook server listening" addr=:9876
-level=INFO msg="runner state" total=1 busy=0 idle=1 auto=0 permanent=1
+level=INFO msg="runner state" total=1 busy=0 idle=1 auto=1 permanent=0
 ```
 
 ### Performance follow-ups
@@ -594,7 +679,7 @@ level=INFO msg="runner state" total=1 busy=0 idle=1 auto=0 permanent=1
 The scaler-side cache drift, tool-cache env wiring, Buildx local cache root, and age-based Buildx cache pruning are handled in this repo, but two larger speed wins remain operational follow-up items:
 
 - Heavy Docker builds should use `docker buildx build` with the shared local cache under `/cache/buildx`, or a registry/S3 cache when a repo needs cache sharing outside the runner host. Layer cache inside a one-job ephemeral clone is disposable by design unless it is explicitly exported and imported.
-- Expensive common tooling should be prewarmed into the template or the shared tool cache. For this stack that likely includes Cloud SDK, `kubectl`, `gke-gcloud-auth-plugin`, and pinned browser bundles.
+- Expensive common tooling should be prewarmed into the template or the shared tool cache. Common examples include cloud CLIs, deployment plugins, and pinned browser bundles.
 
 ### Quick update on the server
 
@@ -616,31 +701,26 @@ sudo test -f /etc/gh-runner-scaler/env
 
 If `/etc/gh-runner-scaler/config.toml` is missing but the repo checkout has a `config.toml`, the script will install that once. If either file is still missing, the script stops before touching systemd so it does not restart the service into a broken state.
 
-On hosts without Go, build the Linux binary somewhere else and copy it to the host before installing it. The production `nodev2` host currently follows this path:
+On hosts without Go, build the Linux binary somewhere else, copy it to the host, and install it through your normal release process:
 
 ```bash
 GOOS=linux GOARCH=amd64 go build -o /tmp/gh-runner-scaler ./cmd/scaler
-scp -F /dev/null -o IdentitiesOnly=yes -i /home/cordt/.ssh/id_ed25519 \
-  /tmp/gh-runner-scaler bv@192.168.0.170:/home/bv/gh-runner-scaler-$(git rev-parse --short HEAD)
-ssh -tt -F /dev/null -o IdentitiesOnly=yes -i /home/cordt/.ssh/id_ed25519 bv@192.168.0.170 \
+scp /tmp/gh-runner-scaler deployer@runner-host:/tmp/gh-runner-scaler
+ssh deployer@runner-host \
   'set -e
-   cd /home/bv/repos/gh-runner-scaler
-   git fetch origin
-   git checkout main
-   git pull --ff-only origin main
-   sudo install -m 0755 /home/bv/gh-runner-scaler-$(git rev-parse --short HEAD) /usr/local/bin/gh-runner-scaler
+   sudo install -m 0755 /tmp/gh-runner-scaler /usr/local/bin/gh-runner-scaler
    sudo systemctl restart gh-runner-scaler.service
    sudo systemctl --no-pager --full status gh-runner-scaler.service --lines=20'
 ```
 
-Use the full commit SHA with an explicit `test "$(git rev-parse HEAD)" = "<sha>"` guard when doing a production deploy by hand.
+For production, verify the source commit before building and record the deployed commit or release artifact alongside your normal change log.
 
-### One-shot test
+### One-shot reconcile
 
-Verify LXD and GitHub connectivity before enabling the daemon:
+Verify LXD and GitHub connectivity before enabling the daemon. This is an active reconcile, not a dry-run; it may create or clean up managed runners and LXD containers according to the config.
 
 ```bash
-sudo -E ./gh-runner-scaler reconcile --config /etc/gh-runner-scaler/config.toml
+sudo sh -c 'set -a; . /etc/gh-runner-scaler/env; set +a; exec /usr/local/bin/gh-runner-scaler reconcile --config /etc/gh-runner-scaler/config.toml'
 ```
 
 ### Manual / foreground run
@@ -648,8 +728,7 @@ sudo -E ./gh-runner-scaler reconcile --config /etc/gh-runner-scaler/config.toml
 For debugging, run the daemon in the foreground:
 
 ```bash
-set -a; source /etc/gh-runner-scaler/env; set +a
-sudo -E /usr/local/bin/gh-runner-scaler daemon --config /etc/gh-runner-scaler/config.toml
+sudo sh -c 'set -a; . /etc/gh-runner-scaler/env; set +a; exec /usr/local/bin/gh-runner-scaler daemon --config /etc/gh-runner-scaler/config.toml'
 ```
 
 ### File layout after install
@@ -697,10 +776,7 @@ Both dashboards require Grafana with a Loki datasource receiving metrics from th
 
 The dashboards default to `1m` auto-refresh to match the default metrics collection interval. If you change `[metrics].interval`, keep the Grafana refresh interval aligned so panels are not repeatedly redrawn without new samples.
 
-The exported dashboard currently references the Loki datasource UID
-`grafanacloud-axionic-logs`. If your Grafana stack uses a different Loki
-datasource UID, remap the datasource during import or update the panel
-datasource settings after import.
+The maintained dashboard baseline expects a Loki datasource UID of `loki`. If your Grafana stack uses a different Loki datasource UID, remap the datasource during import or update the panel datasource settings after import.
 
 ## Load Testing
 

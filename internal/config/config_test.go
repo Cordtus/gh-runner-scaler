@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -189,6 +190,55 @@ func TestRunnerClassConfigs_ResolvesClassOverridesAndCacheProfile(t *testing.T) 
 	}
 }
 
+func TestRunnerClassConfigs_SkipsDisabledClasses(t *testing.T) {
+	disabled := false
+	cfg := validConfig()
+	cfg.RunnerClasses = []RunnerClassConfig{
+		{
+			Enabled: &disabled,
+			ID:      "axionic-disabled",
+			Org:     "Axionic-Labs",
+			Prefix:  "axionic-auto",
+			Labels:  "self-hosted,linux,x64,runner-class-axionic",
+		},
+		{
+			ID:     "cac-group",
+			Org:    "cac-group",
+			Prefix: "cac-auto",
+			Labels: "self-hosted,linux,x64,runner-class-cac",
+		},
+	}
+
+	classes, err := cfg.RunnerClassConfigs()
+	if err != nil {
+		t.Fatalf("RunnerClassConfigs failed: %v", err)
+	}
+	if len(classes) != 1 {
+		t.Fatalf("expected one enabled class, got %d: %+v", len(classes), classes)
+	}
+	if classes[0].ID != "cac-group" || classes[0].Org != "cac-group" {
+		t.Fatalf("unexpected enabled class: %+v", classes[0])
+	}
+}
+
+func TestRunnerClassConfigs_ResolvesRepositoryTarget(t *testing.T) {
+	cfg := validConfig()
+	cfg.CI.Org = ""
+	cfg.CI.Repo = "Cordtus/gh-runner-scaler"
+
+	classes, err := cfg.RunnerClassConfigs()
+	if err != nil {
+		t.Fatalf("RunnerClassConfigs failed: %v", err)
+	}
+	class := classes[0]
+	if class.Org != "" || class.Repo != "Cordtus/gh-runner-scaler" {
+		t.Fatalf("expected repo target, got %+v", class)
+	}
+	if class.TargetName() != "Cordtus/gh-runner-scaler" || !class.RepoScoped() {
+		t.Fatalf("unexpected repo target helpers: target=%q repoScoped=%v", class.TargetName(), class.RepoScoped())
+	}
+}
+
 func TestRunnerClassConfigs_BlankMatchLabelsFallBackToRunnerLabels(t *testing.T) {
 	cfg := validConfig()
 	cfg.RunnerClasses = []RunnerClassConfig{{
@@ -218,6 +268,73 @@ func TestValidate_RunnerClassPrefixesMustBeUnique(t *testing.T) {
 	err := validate(cfg)
 	if err == nil || !strings.Contains(err.Error(), "runner class prefix must be unique") {
 		t.Fatalf("expected duplicate prefix validation error, got %v", err)
+	}
+}
+
+func TestValidate_CITargetMustNotBeAmbiguous(t *testing.T) {
+	cfg := validConfig()
+	cfg.CI.Org = "cac-group"
+	cfg.CI.Repo = "Cordtus/gh-runner-scaler"
+
+	err := validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "ci must set either org or repo") {
+		t.Fatalf("expected ambiguous target validation error, got %v", err)
+	}
+}
+
+func TestValidate_RunnerClassTargetMustNotBeAmbiguous(t *testing.T) {
+	cfg := validConfig()
+	cfg.RunnerClasses = []RunnerClassConfig{{
+		ID:     "personal",
+		Org:    "cac-group",
+		Repo:   "Cordtus/gh-runner-scaler",
+		Prefix: "personal-auto",
+	}}
+
+	err := validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "runner class personal must set either org or repo") {
+		t.Fatalf("expected ambiguous runner class target validation error, got %v", err)
+	}
+}
+
+func TestValidate_RepositoryTargetsMustUseOwnerNameForm(t *testing.T) {
+	cfg := validConfig()
+	cfg.CI.Org = ""
+	cfg.CI.Repo = "Cordtus"
+
+	err := validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "owner/name") {
+		t.Fatalf("expected repo full-name validation error, got %v", err)
+	}
+
+	cfg = validConfig()
+	cfg.CI.Org = ""
+	cfg.CI.Repo = "Cordtus /gh-runner-scaler"
+
+	err = validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "owner/name") {
+		t.Fatalf("expected repo whitespace validation error, got %v", err)
+	}
+
+	cfg = validConfig()
+	cfg.CI.Org = ""
+	cfg.CI.Repo = "Cordtus/ gh-runner-scaler"
+
+	err = validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "owner/name") {
+		t.Fatalf("expected repo whitespace validation error, got %v", err)
+	}
+
+	cfg = validConfig()
+	cfg.RunnerClasses = []RunnerClassConfig{{
+		ID:     "personal",
+		Repo:   "Cordtus/nested/repo",
+		Prefix: "personal-auto",
+	}}
+
+	err = validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "owner/name") {
+		t.Fatalf("expected runner class repo full-name validation error, got %v", err)
 	}
 }
 
@@ -277,6 +394,60 @@ func TestApplyEnvOverrides_FallsBackToWebhookSecretForLogsToken(t *testing.T) {
 	if cfg.Webhook.LogsToken != "webhook-secret" {
 		t.Fatalf("expected webhook secret fallback, got %q", cfg.Webhook.LogsToken)
 	}
+}
+
+func TestLoad_ConfigExampleIsGenericStarter(t *testing.T) {
+	t.Setenv("GH_SCALER_GITHUB_TOKEN", "token")
+	t.Setenv("GH_WEBHOOK_SECRET", "webhook-secret")
+
+	cfg, err := Load("../../config.example.toml")
+	if err == nil || !strings.Contains(err.Error(), "ci org or repo is required") {
+		t.Fatalf("expected config.example.toml to require a deployer target, got cfg=%+v err=%v", cfg, err)
+	}
+
+	raw, err := os.ReadFile("../../config.example.toml")
+	if err != nil {
+		t.Fatalf("ReadFile config.example.toml failed: %v", err)
+	}
+	configured := strings.Replace(string(raw), `org = ""`, `org = "ExampleOrg"`, 1)
+	path := t.TempDir() + "/config.toml"
+	if err := os.WriteFile(path, []byte(configured), 0o644); err != nil {
+		t.Fatalf("WriteFile configured example failed: %v", err)
+	}
+
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load configured config.example.toml failed: %v", err)
+	}
+	if cfg.Metrics.Enabled {
+		t.Fatal("generic config.example.toml should keep metrics disabled until Loki is configured")
+	}
+	if cfg.State.Filesystem.Dir != "/var/lib/gh-runner-scaler/state" {
+		t.Fatalf("expected starter state dir to match systemd install path, got %q", cfg.State.Filesystem.Dir)
+	}
+	classes, err := cfg.RunnerClassConfigs()
+	if err != nil {
+		t.Fatalf("RunnerClassConfigs failed: %v", err)
+	}
+	if len(classes) != 1 {
+		t.Fatalf("expected one enabled runner class, got %d: %+v", len(classes), classes)
+	}
+	class := classes[0]
+	if class.ID != "default" || class.Org != "ExampleOrg" || class.RepoScoped() {
+		t.Fatalf("expected generic default org class, got %+v", class)
+	}
+	if !hasLabel(class.Labels, "runner-class-default") {
+		t.Fatalf("expected starter labels to include runner-class-default, got %q", class.Labels)
+	}
+}
+
+func hasLabel(labels, want string) bool {
+	for _, label := range labelsList(labels) {
+		if label == want {
+			return true
+		}
+	}
+	return false
 }
 
 func validConfig() *Config {

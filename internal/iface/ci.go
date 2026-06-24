@@ -10,7 +10,7 @@ import (
 // The GitHub provider implements this via go-github; future providers
 // could target GitLab, Gitea, etc.
 type CIProvider interface {
-	// ListRunners returns all runners registered with the org/group.
+	// ListRunners returns all runners registered with the configured target.
 	ListRunners(ctx context.Context) ([]domain.Runner, error)
 
 	// GetRegistrationToken returns a short-lived token for registering a new runner.
@@ -22,7 +22,7 @@ type CIProvider interface {
 	// DeleteRunner removes a runner by ID from the CI platform.
 	DeleteRunner(ctx context.Context, runnerID int64) error
 
-	// RegistrationURL returns the URL used in runner config (e.g. https://github.com/OrgName).
+	// RegistrationURL returns the URL used in runner config (e.g. https://github.com/OrgName or https://github.com/owner/repo).
 	RegistrationURL() string
 
 	// ClassifyRunner returns true if the runner name matches the auto-scaled prefix.

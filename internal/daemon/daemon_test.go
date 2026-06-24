@@ -266,6 +266,38 @@ func TestGroupsForEvent_FallsBackToAllGroupsWhenNoLabelsMatch(t *testing.T) {
 	}
 }
 
+func TestGroupsForEvent_FiltersByOrgTargetBeforeLabelFallback(t *testing.T) {
+	d := &Daemon{groups: []RunnerGroup{
+		{ID: "axionic", Target: "Axionic-Labs", MatchLabels: []string{"self-hosted", "linux"}},
+		{ID: "cac", Target: "cac-group", MatchLabels: []string{"runner-class-cac"}},
+	}}
+	event := &domain.WebhookEvent{
+		Repo:   "cac-group/cacmin-bot",
+		Labels: []string{"self-hosted", "linux", "runner-class-other"},
+	}
+
+	groups := d.groupsForEvent(event)
+	if len(groups) != 1 || groups[0].ID != "cac" {
+		t.Fatalf("expected cac group only, got %+v", groups)
+	}
+}
+
+func TestGroupsForEvent_FiltersByRepositoryTarget(t *testing.T) {
+	d := &Daemon{groups: []RunnerGroup{
+		{ID: "personal", Target: "Cordtus/gh-runner-scaler", RepoScoped: true, MatchLabels: []string{"self-hosted"}},
+		{ID: "cac", Target: "cac-group", MatchLabels: []string{"self-hosted"}},
+	}}
+	event := &domain.WebhookEvent{
+		Repo:   "Cordtus/gh-runner-scaler",
+		Labels: []string{"self-hosted", "linux"},
+	}
+
+	groups := d.groupsForEvent(event)
+	if len(groups) != 1 || groups[0].ID != "personal" {
+		t.Fatalf("expected personal repo group only, got %+v", groups)
+	}
+}
+
 func waitForTriggerCount(t *testing.T, d *Daemon, want int) {
 	t.Helper()
 

@@ -274,19 +274,55 @@ func (d *Daemon) logWebhookEvent(event *domain.WebhookEvent) {
 }
 
 func (d *Daemon) groupsForEvent(event *domain.WebhookEvent) []RunnerGroup {
-	if event == nil || len(event.Labels) == 0 {
+	if event == nil {
 		return append([]RunnerGroup(nil), d.groups...)
 	}
-	groups := make([]RunnerGroup, 0, len(d.groups))
-	for _, group := range d.groups {
+
+	candidates := d.groupsForRepo(event.Repo)
+	if len(candidates) == 0 {
+		return nil
+	}
+	if len(event.Labels) == 0 {
+		return candidates
+	}
+
+	groups := make([]RunnerGroup, 0, len(candidates))
+	for _, group := range candidates {
 		if labelsMatch(event.Labels, group.MatchLabels) {
 			groups = append(groups, group)
 		}
 	}
 	if len(groups) == 0 {
-		return append([]RunnerGroup(nil), d.groups...)
+		return candidates
 	}
 	return groups
+}
+
+func (d *Daemon) groupsForRepo(repo string) []RunnerGroup {
+	if strings.TrimSpace(repo) == "" {
+		return append([]RunnerGroup(nil), d.groups...)
+	}
+
+	groups := make([]RunnerGroup, 0, len(d.groups))
+	for _, group := range d.groups {
+		if groupMatchesRepo(group, repo) {
+			groups = append(groups, group)
+		}
+	}
+	return groups
+}
+
+func groupMatchesRepo(group RunnerGroup, repo string) bool {
+	target := strings.ToLower(strings.TrimSpace(group.Target))
+	repo = strings.ToLower(strings.TrimSpace(repo))
+	if target == "" || repo == "" {
+		return true
+	}
+	if group.RepoScoped {
+		return repo == target
+	}
+	owner, _, ok := strings.Cut(repo, "/")
+	return ok && owner == target
 }
 
 func labelsMatch(jobLabels, groupLabels []string) bool {

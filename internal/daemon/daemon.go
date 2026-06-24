@@ -37,6 +37,8 @@ type Config struct {
 // RunnerGroup is one logical runner class managed by the daemon.
 type RunnerGroup struct {
 	ID          string
+	Target      string
+	RepoScoped  bool
 	Prefix      string
 	MatchLabels []string
 	CachePool   string
@@ -123,6 +125,7 @@ func New(
 ) *Daemon {
 	group := RunnerGroup{
 		ID:         "default",
+		Target:     "",
 		Prefix:     cfg.Prefix,
 		CachePool:  cfg.CachePool,
 		Reconciler: reconciler,
