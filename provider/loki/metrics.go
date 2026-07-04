@@ -11,16 +11,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Cordtus/gh-runner-scaler/internal/domain"
 )
 
-// Backend pushes metrics to Grafana Cloud Loki.
+// Backend pushes metrics to Loki.
 type Backend struct {
 	pushURL  string
 	username string
@@ -28,6 +30,7 @@ type Backend struct {
 	org      string
 	client   *http.Client
 	retries  []time.Duration
+	now      func() time.Time
 }
 
 // New creates a Loki metrics backend.
@@ -41,6 +44,7 @@ func New(pushURL, username, apiKey, org string) *Backend {
 			Timeout: 10 * time.Second,
 		},
 		retries: []time.Duration{250 * time.Millisecond, 1 * time.Second},
+		now:     time.Now,
 	}
 }
 
@@ -94,7 +98,7 @@ func (b *Backend) PushWorkflowMetrics(ctx context.Context, runs []domain.Workflo
 			entries = append(entries, run)
 		}
 
-		values, err := buildValues(entries)
+		values, err := b.buildValues(entries)
 		if err != nil {
 			return err
 		}
@@ -166,7 +170,7 @@ func (b *Backend) pushEntries(ctx context.Context, labels map[string]string, ent
 		return nil
 	}
 
-	values, err := buildValues(entries)
+	values, err := b.buildValues(entries)
 	if err != nil {
 		return err
 	}
@@ -179,19 +183,20 @@ func (b *Backend) pushEntries(ctx context.Context, labels map[string]string, ent
 	})
 }
 
-func buildValues(entries []any) ([][]string, error) {
+func (b *Backend) buildValues(entries []any) ([][]string, error) {
 	values := make([][]string, 0, len(entries))
+	now := b.now
+	if now == nil {
+		now = time.Now
+	}
+	baseTime := now().UTC()
 	for i, entry := range entries {
 		valueJSON, err := json.Marshal(entry)
 		if err != nil {
 			return nil, fmt.Errorf("marshaling metrics: %w", err)
 		}
-		timestamp := entryTimestamp(entry)
-		if timestamp.IsZero() {
-			timestamp = time.Now()
-		}
 		values = append(values, []string{
-			strconv.FormatInt(timestamp.UTC().UnixNano()+int64(i), 10),
+			strconv.FormatInt(baseTime.UnixNano()+int64(i), 10),
 			string(valueJSON),
 		})
 	}
@@ -211,7 +216,9 @@ func (b *Backend) pushPayload(ctx context.Context, payload lokiPayload) error {
 			return fmt.Errorf("creating Loki request: %w", err)
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.SetBasicAuth(b.username, b.apiKey)
+		if b.username != "" || b.apiKey != "" {
+			req.SetBasicAuth(b.username, b.apiKey)
+		}
 
 		resp, err := b.client.Do(req)
 		if err != nil {
@@ -226,11 +233,12 @@ func (b *Backend) pushPayload(ctx context.Context, payload lokiPayload) error {
 		}
 
 		statusCode := resp.StatusCode
+		responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		resp.Body.Close()
 		if statusCode == http.StatusOK || statusCode == http.StatusNoContent {
 			return nil
 		}
-		lastErr = fmt.Errorf("Loki push returned %d", statusCode)
+		lastErr = lokiStatusError(statusCode, responseBody, readErr)
 		if attempt < len(b.retries) && isRetryableLokiStatus(statusCode) {
 			if sleepContext(ctx, b.retries[attempt]) != nil {
 				return lastErr
@@ -240,6 +248,17 @@ func (b *Backend) pushPayload(ctx context.Context, payload lokiPayload) error {
 		return lastErr
 	}
 	return lastErr
+}
+
+func lokiStatusError(statusCode int, responseBody []byte, readErr error) error {
+	if readErr != nil {
+		return fmt.Errorf("Loki push returned %d; reading response body: %w", statusCode, readErr)
+	}
+	body := strings.TrimSpace(string(responseBody))
+	if body == "" {
+		return fmt.Errorf("Loki push returned %d", statusCode)
+	}
+	return fmt.Errorf("Loki push returned %d: %s", statusCode, body)
 }
 
 func isRetryableLokiStatus(statusCode int) bool {
@@ -262,17 +281,6 @@ func sleepContext(ctx context.Context, delay time.Duration) error {
 		return ctx.Err()
 	case <-timer.C:
 		return nil
-	}
-}
-
-func entryTimestamp(entry any) time.Time {
-	switch value := entry.(type) {
-	case domain.WorkflowMetrics:
-		return parseEntryTime(value.CompletedAt)
-	case domain.IssueEvent:
-		return parseEntryTime(value.ObservedAt)
-	default:
-		return time.Time{}
 	}
 }
 

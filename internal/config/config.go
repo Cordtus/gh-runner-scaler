@@ -148,7 +148,7 @@ type MetricsConfig struct {
 type LokiConfig struct {
 	PushURL  string `toml:"-"` // from LOKI_PUSH_URL env
 	Username string `toml:"-"` // from LOKI_USERNAME env
-	APIKey   string `toml:"-"` // from GRAFANA_CLOUD_API_KEY env
+	APIKey   string `toml:"-"` // from LOKI_API_KEY, LOKI_PASSWORD, or GRAFANA_CLOUD_API_KEY env
 }
 
 // StateConfig selects and configures the state store provider.
@@ -262,7 +262,11 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("LOKI_USERNAME"); v != "" {
 		cfg.Metrics.Loki.Username = v
 	}
-	if v := os.Getenv("GRAFANA_CLOUD_API_KEY"); v != "" {
+	if v := os.Getenv("LOKI_API_KEY"); v != "" {
+		cfg.Metrics.Loki.APIKey = v
+	} else if v := os.Getenv("LOKI_PASSWORD"); v != "" {
+		cfg.Metrics.Loki.APIKey = v
+	} else if v := os.Getenv("GRAFANA_CLOUD_API_KEY"); v != "" {
 		cfg.Metrics.Loki.APIKey = v
 	}
 }
@@ -336,11 +340,8 @@ func validate(cfg *Config) error {
 		// Only validate Loki config if the metrics backend is loki (currently the only one)
 		return fmt.Errorf("LOKI_PUSH_URL env var is required when metrics are enabled")
 	}
-	if cfg.Metrics.Enabled && cfg.Metrics.Loki.Username == "" {
-		return fmt.Errorf("LOKI_USERNAME env var is required when metrics are enabled")
-	}
-	if cfg.Metrics.Enabled && cfg.Metrics.Loki.APIKey == "" {
-		return fmt.Errorf("GRAFANA_CLOUD_API_KEY env var is required when metrics are enabled")
+	if cfg.Metrics.Enabled && (cfg.Metrics.Loki.Username == "") != (cfg.Metrics.Loki.APIKey == "") {
+		return fmt.Errorf("LOKI_USERNAME and LOKI_API_KEY/LOKI_PASSWORD must be set together when Loki requires basic auth")
 	}
 	if cfg.Metrics.Enabled && cfg.Metrics.Interval.Duration <= 0 {
 		return fmt.Errorf("metrics.interval must be > 0")

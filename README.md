@@ -12,7 +12,7 @@ Use this path for a first deployment. The detailed reference sections below expl
 4. Copy `config.example.toml` to `config.toml`, then set exactly one GitHub target:
    - `ci.org = "YourOrg"` for organization-scoped runners
    - `ci.repo = "owner/repo"` for one repository-scoped runner target
-5. Keep `[metrics].enabled = false` until you have Loki credentials. Metrics are optional.
+5. Keep `[metrics].enabled = false` until you have a Loki push endpoint. Metrics are optional.
 6. Build and install the service:
 
 ```bash
@@ -305,7 +305,7 @@ For Grafana Cloud:
 | Loki username | Instance ID shown on the same page |
 | API key | Grafana Cloud > API Keys > create with Loki write scope |
 
-For self-managed Loki, use the Loki push URL and credentials configured for your deployment.
+For self-managed Loki, use the Loki push URL and credentials configured for your deployment. If your local Loki has `auth_enabled: false`, set only `LOKI_PUSH_URL`.
 
 ---
 
@@ -572,16 +572,16 @@ curl -H "Authorization: Bearer $GH_SCALER_LOG_TOKEN" \
 | `workflow_repo_batch_size` | `25` | Max repos scanned per workflow-metrics interval (`0` = scan all repos) |
 | `collect_host` | `true` | Include container counts and storage pool usage |
 
-Loki-specific settings under `[metrics.loki]` are set via environment variables. They can point to either self-managed Loki or Grafana Cloud Loki.
+Loki-specific settings under `[metrics.loki]` are set via environment variables. They can point to either self-managed Loki or Grafana Cloud Loki. `LOKI_PUSH_URL` is required when metrics are enabled. `LOKI_USERNAME` plus `LOKI_API_KEY` or `LOKI_PASSWORD` enables HTTP basic auth; the legacy `GRAFANA_CLOUD_API_KEY` name is still accepted for Grafana Cloud deployments.
 
-Loki pushes retry short-lived transport failures, including temporary DNS resolver errors, before surfacing the push failure in logs.
+Loki pushes retry short-lived transport failures, including temporary DNS resolver errors, before surfacing the push failure in logs. Non-2xx Loki responses include the response body in the error so server-side validation failures are visible in the scaler journal.
 
 When metrics are enabled, the daemon also derives two additional observability streams from the retained structured event history in the state dir:
 
 - `lifecycle-metrics`: queue wait, runner reuse, and scale-down-to-next-scale-up analytics
 - `issue-events`: warning/error events from the scaler itself for issue-count panels
 
-Workflow metrics are collected in two phases to control GitHub API use. The provider first lists recent completed workflow runs without job/step detail, filters out runs already delivered to Loki, and only then enriches fresh failed runs with failed job, failed step, and failure reason. For org-scoped targets, the repository list is cached for 10 minutes and `workflow_repo_batch_size` rotates through repos across collection intervals. Repo-scoped targets query only their configured repository. With the default `25`, a large org is scanned in bounded chunks instead of every metrics tick.
+Workflow metrics are collected in two phases to control GitHub API use. The provider first lists recent completed workflow runs without job/step detail, filters out runs already delivered to Loki, and only then enriches fresh failed runs with failed job, failed step, and failure reason. For org-scoped targets, the repository list is cached for 10 minutes and `workflow_repo_batch_size` rotates through repos across collection intervals. Repo-scoped targets query only their configured repository. With the default `25`, a large org is scanned in bounded chunks instead of every metrics tick. Loki entries use push-time timestamps so self-managed Loki deployments with old-sample rejection do not reject quiet repositories whose most recent workflow runs are older than the Loki sample window; the original GitHub completion time remains in the `completed_at` JSON field.
 
 For lower GitHub API load, keep the webhook enabled so the poll loop can remain a safety net, keep `[metrics].interval` at or above the default `60s`, leave `workflow_repo_batch_size` bounded for large orgs, and disable `collect_workflows` if dashboard workflow history is not needed.
 
@@ -621,8 +621,9 @@ Secrets are **never** stored in the config file. Set them as environment variabl
 | `GH_WEBHOOK_SECRET` | If webhook enabled | HMAC secret for signature verification |
 | `GH_SCALER_LOG_TOKEN` | Optional | Dedicated bearer token for `GET /logs` (falls back to `GH_WEBHOOK_SECRET`) |
 | `LOKI_PUSH_URL` | If metrics enabled | Grafana Loki push endpoint |
-| `LOKI_USERNAME` | If metrics enabled | Loki instance ID |
-| `GRAFANA_CLOUD_API_KEY` | If metrics enabled | Loki write API key |
+| `LOKI_USERNAME` | If Loki basic auth is enabled | Loki basic auth username or Grafana Cloud instance ID |
+| `LOKI_API_KEY` or `LOKI_PASSWORD` | If Loki basic auth is enabled | Loki basic auth password or write API key |
+| `GRAFANA_CLOUD_API_KEY` | Optional legacy fallback | Grafana Cloud Loki write API key |
 
 ---
 
@@ -645,7 +646,8 @@ GH_WEBHOOK_SECRET=your-webhook-secret
 # GH_SCALER_LOG_TOKEN=separate-read-token
 # LOKI_PUSH_URL=https://logs-prod-XXX.grafana.net/loki/api/v1/push
 # LOKI_USERNAME=your-loki-instance-id
-# GRAFANA_CLOUD_API_KEY=...
+# LOKI_API_KEY=...
+# GRAFANA_CLOUD_API_KEY=... # legacy fallback
 EOF
 sudo chmod 600 /etc/gh-runner-scaler/env
 ```

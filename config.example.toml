@@ -182,7 +182,8 @@ collect_host = true
 # keeping workflow_repo_batch_size bounded for large orgs.
 
 [metrics.loki]
-# Set via env: LOKI_PUSH_URL, LOKI_USERNAME, GRAFANA_CLOUD_API_KEY
+# Set via env: LOKI_PUSH_URL. If Loki requires basic auth, also set
+# LOKI_USERNAME and LOKI_API_KEY or LOKI_PASSWORD.
 
 [state]
 provider = "filesystem"        # future: "supabase", "redis", etc.

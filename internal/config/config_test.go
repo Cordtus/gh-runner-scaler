@@ -6,20 +6,24 @@ import (
 	"testing"
 )
 
-func TestValidate_MetricsRequiresAllCredentials(t *testing.T) {
+func TestValidate_MetricsRequiresPushURLAndOptionalAuthPair(t *testing.T) {
 	cfg := validConfig()
 	cfg.Metrics.Enabled = true
-	cfg.Metrics.Loki.PushURL = "https://logs.example.com/loki/api/v1/push"
 
 	err := validate(cfg)
-	if err == nil || !strings.Contains(err.Error(), "LOKI_USERNAME") {
-		t.Fatalf("expected missing username validation error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "LOKI_PUSH_URL") {
+		t.Fatalf("expected missing push URL validation error, got %v", err)
+	}
+
+	cfg.Metrics.Loki.PushURL = "https://logs.example.com/loki/api/v1/push"
+	if err := validate(cfg); err != nil {
+		t.Fatalf("expected unauthenticated Loki config to validate, got %v", err)
 	}
 
 	cfg.Metrics.Loki.Username = "instance-id"
 	err = validate(cfg)
-	if err == nil || !strings.Contains(err.Error(), "GRAFANA_CLOUD_API_KEY") {
-		t.Fatalf("expected missing api key validation error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "LOKI_USERNAME and LOKI_API_KEY/LOKI_PASSWORD") {
+		t.Fatalf("expected missing password validation error, got %v", err)
 	}
 
 	cfg.Metrics.Loki.APIKey = "api-key"
@@ -396,6 +400,29 @@ func TestApplyEnvOverrides_FallsBackToWebhookSecretForLogsToken(t *testing.T) {
 	}
 }
 
+func TestApplyEnvOverrides_UsesGenericLokiCredentialBeforeGrafanaCloudFallback(t *testing.T) {
+	t.Setenv("LOKI_API_KEY", "loki-key")
+	t.Setenv("GRAFANA_CLOUD_API_KEY", "grafana-key")
+
+	cfg := defaults()
+	applyEnvOverrides(cfg)
+
+	if cfg.Metrics.Loki.APIKey != "loki-key" {
+		t.Fatalf("expected generic Loki API key, got %q", cfg.Metrics.Loki.APIKey)
+	}
+}
+
+func TestApplyEnvOverrides_KeepsGrafanaCloudCredentialFallback(t *testing.T) {
+	t.Setenv("GRAFANA_CLOUD_API_KEY", "grafana-key")
+
+	cfg := defaults()
+	applyEnvOverrides(cfg)
+
+	if cfg.Metrics.Loki.APIKey != "grafana-key" {
+		t.Fatalf("expected Grafana Cloud fallback API key, got %q", cfg.Metrics.Loki.APIKey)
+	}
+}
+
 func TestLoad_ConfigExampleIsGenericStarter(t *testing.T) {
 	t.Setenv("GH_SCALER_GITHUB_TOKEN", "token")
 	t.Setenv("GH_WEBHOOK_SECRET", "webhook-secret")
@@ -445,8 +472,10 @@ func TestLoad_Nodev2ConfigTargetsCACAndPersonalRepo(t *testing.T) {
 	t.Setenv("GH_SCALER_GITHUB_TOKEN", "token")
 	t.Setenv("GH_WEBHOOK_SECRET", "webhook-secret")
 	t.Setenv("LOKI_PUSH_URL", "https://logs.example/loki/api/v1/push")
-	t.Setenv("LOKI_USERNAME", "user")
-	t.Setenv("GRAFANA_CLOUD_API_KEY", "key")
+	t.Setenv("LOKI_USERNAME", "")
+	t.Setenv("LOKI_API_KEY", "")
+	t.Setenv("LOKI_PASSWORD", "")
+	t.Setenv("GRAFANA_CLOUD_API_KEY", "")
 
 	cfg, err := Load("../../deploy/nodev2.config.toml")
 	if err != nil {

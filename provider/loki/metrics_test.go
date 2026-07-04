@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,6 +40,8 @@ func TestPushWorkflowMetrics_SendsIndividualLogEntries(t *testing.T) {
 	defer server.Close()
 
 	backend := New(server.URL, "user", "key", "ExampleOrg")
+	fixedNow := time.Date(2026, 7, 4, 23, 10, 0, 0, time.UTC)
+	backend.now = func() time.Time { return fixedNow }
 	runs := []domain.WorkflowMetrics{
 		{RunID: 2, Repo: "repo-a", Workflow: "build", Conclusion: "success", DurationS: 90, RunNumber: 7, Event: "push", Branch: "main", CompletedAt: "2026-05-04T12:05:00Z"},
 		{RunID: 3, Repo: "repo-b", Workflow: "lint", Conclusion: "failure", DurationS: 45, RunNumber: 8, Event: "pull_request", Branch: "dev", CompletedAt: "2026-05-04T12:03:00Z"},
@@ -87,12 +90,12 @@ func TestPushWorkflowMetrics_SendsIndividualLogEntries(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parse repo-a timestamp %d: %v", i, err)
 		}
-		wantTime, err := time.Parse(time.RFC3339, decoded.CompletedAt)
-		if err != nil {
-			t.Fatalf("parse repo-a completed_at %d: %v", i, err)
+		wantNS := fixedNow.UnixNano() + int64(i)
+		if gotNS != wantNS {
+			t.Fatalf("repo-a timestamp %d = %d, want %d", i, gotNS, wantNS)
 		}
-		if gotNS != wantTime.UnixNano()+int64(i) {
-			t.Fatalf("repo-a timestamp %d = %d, want %d", i, gotNS, wantTime.UnixNano()+int64(i))
+		if decoded.CompletedAt == "" {
+			t.Fatalf("repo-a decoded run %d completed_at empty", i)
 		}
 	}
 
@@ -109,6 +112,13 @@ func TestPushWorkflowMetrics_SendsIndividualLogEntries(t *testing.T) {
 	}
 	if repoBRun.RunID != 3 {
 		t.Fatalf("repo-b decoded run id = %d, want 3", repoBRun.RunID)
+	}
+	repoBTimestamp, err := strconv.ParseInt(repoB.Values[0][0], 10, 64)
+	if err != nil {
+		t.Fatalf("parse repo-b timestamp: %v", err)
+	}
+	if repoBTimestamp != fixedNow.UnixNano() {
+		t.Fatalf("repo-b timestamp = %d, want %d", repoBTimestamp, fixedNow.UnixNano())
 	}
 }
 
@@ -199,6 +209,41 @@ func TestPushRunnerMetrics_RetriesServerErrors(t *testing.T) {
 	}
 	if requests != 2 {
 		t.Fatalf("requests = %d, want 2", requests)
+	}
+}
+
+func TestPushRunnerMetrics_AllowsUnauthenticatedLoki(t *testing.T) {
+	var authHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	backend := New(server.URL, "", "", "ExampleOrg")
+
+	if err := backend.PushRunnerMetrics(context.Background(), domain.RunnerMetrics{TotalRunners: 1}); err != nil {
+		t.Fatalf("PushRunnerMetrics returned error: %v", err)
+	}
+	if authHeader != "" {
+		t.Fatalf("Authorization header = %q, want empty", authHeader)
+	}
+}
+
+func TestPushRunnerMetrics_IncludesLokiErrorBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "timestamp too old", http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	backend := New(server.URL, "", "", "ExampleOrg")
+
+	err := backend.PushRunnerMetrics(context.Background(), domain.RunnerMetrics{TotalRunners: 1})
+	if err == nil {
+		t.Fatal("PushRunnerMetrics returned nil, want error")
+	}
+	if !strings.Contains(err.Error(), "Loki push returned 400: timestamp too old") {
+		t.Fatalf("error = %q, want Loki response body", err.Error())
 	}
 }
 
@@ -312,6 +357,8 @@ func TestPushIssueEvents_UsesObservedTimestamp(t *testing.T) {
 	defer server.Close()
 
 	backend := New(server.URL, "user", "key", "ExampleOrg")
+	fixedNow := time.Date(2026, 7, 4, 23, 11, 0, 0, time.UTC)
+	backend.now = func() time.Time { return fixedNow }
 	observedAt := "2026-05-04T12:34:56Z"
 	issues := []domain.IssueEvent{{
 		Level:      "warn",
@@ -332,8 +379,14 @@ func TestPushIssueEvents_UsesObservedTimestamp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse timestamp: %v", err)
 	}
-	wantTime, _ := time.Parse(time.RFC3339, observedAt)
-	if gotNS != wantTime.UnixNano() {
-		t.Fatalf("timestamp = %d, want %d", gotNS, wantTime.UnixNano())
+	if gotNS != fixedNow.UnixNano() {
+		t.Fatalf("timestamp = %d, want %d", gotNS, fixedNow.UnixNano())
+	}
+	var decoded domain.IssueEvent
+	if err := json.Unmarshal([]byte(captured.Streams[0].Values[0][1]), &decoded); err != nil {
+		t.Fatalf("unmarshal issue event: %v", err)
+	}
+	if decoded.ObservedAt != observedAt {
+		t.Fatalf("observed_at = %q, want %q", decoded.ObservedAt, observedAt)
 	}
 }
