@@ -12,6 +12,9 @@ CONFIG_SOURCE="${GH_RUNNER_SCALER_CONFIG_SOURCE:-}"
 ENV_PATH="${CONFIG_DIR}/env"
 STATE_DIR="/var/lib/gh-runner-scaler/state"
 
+PATH="/usr/local/go/bin:${PATH}"
+export PATH
+
 run_as_root() {
   if [[ "${EUID}" -eq 0 ]]; then
     "$@"
