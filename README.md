@@ -60,6 +60,27 @@ curl http://127.0.0.1:9876/healthz
 runs-on: [self-hosted, linux, x64, runner-class-default]
 ```
 
+## Nodev2 Targets
+
+The checked-in nodev2 target config lives at `deploy/nodev2.config.toml`. It
+serves `CAC-Group` as an organization-scoped target and `Cordtus/the-clearooor`
+as a repo-scoped personal target. No former customer organizations are
+configured for this deployment.
+
+GitHub does not provide one self-hosted runner pool for every repository owned
+by a personal user account. Personal repositories must be added as repo-scoped
+runner classes, one `owner/name` repository at a time. Use the `the-clearooor`
+class in `deploy/nodev2.config.toml` as the template for additional
+`Cordtus/*` projects.
+
+The live service reads `/etc/gh-runner-scaler/config.toml`; after changing the
+tracked nodev2 config, install it to that path and restart
+`gh-runner-scaler.service`.
+
+```bash
+GH_RUNNER_SCALER_CONFIG_SOURCE=deploy/nodev2.config.toml ./deploy/update-server.sh
+```
+
 ## Architecture
 
 ```

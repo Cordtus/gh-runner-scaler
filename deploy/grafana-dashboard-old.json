@@ -36,7 +36,7 @@
                   "hidden": false,
                   "query": {
                     "datasource": {
-                      "name": "grafanacloud-axionic-logs"
+                      "name": "loki"
                     },
                     "group": "loki",
                     "kind": "DataQuery",
@@ -116,7 +116,7 @@
                   "hidden": false,
                   "query": {
                     "datasource": {
-                      "name": "grafanacloud-axionic-logs"
+                      "name": "loki"
                     },
                     "group": "loki",
                     "kind": "DataQuery",
@@ -196,7 +196,7 @@
                   "hidden": false,
                   "query": {
                     "datasource": {
-                      "name": "grafanacloud-axionic-logs"
+                      "name": "loki"
                     },
                     "group": "loki",
                     "kind": "DataQuery",
@@ -276,7 +276,7 @@
                   "hidden": false,
                   "query": {
                     "datasource": {
-                      "name": "grafanacloud-axionic-logs"
+                      "name": "loki"
                     },
                     "group": "loki",
                     "kind": "DataQuery",
@@ -356,7 +356,7 @@
                   "hidden": false,
                   "query": {
                     "datasource": {
-                      "name": "grafanacloud-axionic-logs"
+                      "name": "loki"
                     },
                     "group": "loki",
                     "kind": "DataQuery",
@@ -437,7 +437,7 @@
                   "hidden": false,
                   "query": {
                     "datasource": {
-                      "name": "grafanacloud-axionic-logs"
+                      "name": "loki"
                     },
                     "group": "loki",
                     "kind": "DataQuery",
@@ -517,7 +517,7 @@
                   "hidden": false,
                   "query": {
                     "datasource": {
-                      "name": "grafanacloud-axionic-logs"
+                      "name": "loki"
                     },
                     "group": "loki",
                     "kind": "DataQuery",
@@ -598,7 +598,7 @@
                   "hidden": false,
                   "query": {
                     "datasource": {
-                      "name": "grafanacloud-axionic-logs"
+                      "name": "loki"
                     },
                     "group": "loki",
                     "kind": "DataQuery",
@@ -679,7 +679,7 @@
                   "hidden": false,
                   "query": {
                     "datasource": {
-                      "name": "grafanacloud-axionic-logs"
+                      "name": "loki"
                     },
                     "group": "loki",
                     "kind": "DataQuery",
@@ -700,7 +700,7 @@
                   "hidden": false,
                   "query": {
                     "datasource": {
-                      "name": "grafanacloud-axionic-logs"
+                      "name": "loki"
                     },
                     "group": "loki",
                     "kind": "DataQuery",
@@ -721,7 +721,7 @@
                   "hidden": false,
                   "query": {
                     "datasource": {
-                      "name": "grafanacloud-axionic-logs"
+                      "name": "loki"
                     },
                     "group": "loki",
                     "kind": "DataQuery",
@@ -742,7 +742,7 @@
                   "hidden": false,
                   "query": {
                     "datasource": {
-                      "name": "grafanacloud-axionic-logs"
+                      "name": "loki"
                     },
                     "group": "loki",
                     "kind": "DataQuery",
@@ -763,7 +763,7 @@
                   "hidden": false,
                   "query": {
                     "datasource": {
-                      "name": "grafanacloud-axionic-logs"
+                      "name": "loki"
                     },
                     "group": "loki",
                     "kind": "DataQuery",
@@ -849,7 +849,7 @@
                   "hidden": false,
                   "query": {
                     "datasource": {
-                      "name": "grafanacloud-axionic-logs"
+                      "name": "loki"
                     },
                     "group": "loki",
                     "kind": "DataQuery",
@@ -870,7 +870,7 @@
                   "hidden": false,
                   "query": {
                     "datasource": {
-                      "name": "grafanacloud-axionic-logs"
+                      "name": "loki"
                     },
                     "group": "loki",
                     "kind": "DataQuery",
@@ -891,7 +891,7 @@
                   "hidden": false,
                   "query": {
                     "datasource": {
-                      "name": "grafanacloud-axionic-logs"
+                      "name": "loki"
                     },
                     "group": "loki",
                     "kind": "DataQuery",
@@ -990,7 +990,7 @@
                   "hidden": false,
                   "query": {
                     "datasource": {
-                      "name": "grafanacloud-axionic-logs"
+                      "name": "loki"
                     },
                     "group": "loki",
                     "kind": "DataQuery",
@@ -1081,7 +1081,7 @@
                   "hidden": false,
                   "query": {
                     "datasource": {
-                      "name": "grafanacloud-axionic-logs"
+                      "name": "loki"
                     },
                     "group": "loki",
                     "kind": "DataQuery",
@@ -1172,7 +1172,7 @@
                   "hidden": false,
                   "query": {
                     "datasource": {
-                      "name": "grafanacloud-axionic-logs"
+                      "name": "loki"
                     },
                     "group": "loki",
                     "kind": "DataQuery",
@@ -1330,7 +1330,7 @@
                   "hidden": false,
                   "query": {
                     "datasource": {
-                      "name": "grafanacloud-axionic-logs"
+                      "name": "loki"
                     },
                     "group": "loki",
                     "kind": "DataQuery",
@@ -1466,7 +1466,7 @@
                   "hidden": false,
                   "query": {
                     "datasource": {
-                      "name": "grafanacloud-axionic-logs"
+                      "name": "loki"
                     },
                     "group": "loki",
                     "kind": "DataQuery",
@@ -1487,7 +1487,7 @@
                   "hidden": false,
                   "query": {
                     "datasource": {
-                      "name": "grafanacloud-axionic-logs"
+                      "name": "loki"
                     },
                     "group": "loki",
                     "kind": "DataQuery",
@@ -1573,7 +1573,7 @@
                   "hidden": false,
                   "query": {
                     "datasource": {
-                      "name": "grafanacloud-axionic-logs"
+                      "name": "loki"
                     },
                     "group": "loki",
                     "kind": "DataQuery",
@@ -1594,7 +1594,7 @@
                   "hidden": false,
                   "query": {
                     "datasource": {
-                      "name": "grafanacloud-axionic-logs"
+                      "name": "loki"
                     },
                     "group": "loki",
                     "kind": "DataQuery",
@@ -1680,7 +1680,7 @@
                   "hidden": false,
                   "query": {
                     "datasource": {
-                      "name": "grafanacloud-axionic-logs"
+                      "name": "loki"
                     },
                     "group": "loki",
                     "kind": "DataQuery",

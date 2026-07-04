@@ -8,6 +8,7 @@ BIN_PATH="/usr/local/bin/gh-runner-scaler"
 UNIT_PATH="/etc/systemd/system/gh-runner-scaler.service"
 CONFIG_DIR="/etc/gh-runner-scaler"
 CONFIG_PATH="${CONFIG_DIR}/config.toml"
+CONFIG_SOURCE="${GH_RUNNER_SCALER_CONFIG_SOURCE:-}"
 ENV_PATH="${CONFIG_DIR}/env"
 STATE_DIR="/var/lib/gh-runner-scaler/state"
 
@@ -43,7 +44,17 @@ run_as_root install -d "${CONFIG_DIR}" "${STATE_DIR}"
 run_as_root install -m 0755 "${TMP_BIN}" "${BIN_PATH}"
 run_as_root install -m 0644 "${REPO_ROOT}/deploy/systemd/gh-runner-scaler.service" "${UNIT_PATH}"
 
-if [[ -f "${REPO_ROOT}/config.toml" && ! -f "${CONFIG_PATH}" ]]; then
+if [[ -n "${CONFIG_SOURCE}" ]]; then
+  if [[ "${CONFIG_SOURCE}" != /* ]]; then
+    CONFIG_SOURCE="${REPO_ROOT}/${CONFIG_SOURCE}"
+  fi
+  if [[ ! -f "${CONFIG_SOURCE}" ]]; then
+    echo "error: requested config source does not exist: ${CONFIG_SOURCE}" >&2
+    exit 1
+  fi
+  echo "Installing config from ${CONFIG_SOURCE}"
+  run_as_root install -m 0644 "${CONFIG_SOURCE}" "${CONFIG_PATH}"
+elif [[ -f "${REPO_ROOT}/config.toml" && ! -f "${CONFIG_PATH}" ]]; then
   echo "Installing missing config from repo checkout"
   run_as_root install -m 0644 "${REPO_ROOT}/config.toml" "${CONFIG_PATH}"
 fi

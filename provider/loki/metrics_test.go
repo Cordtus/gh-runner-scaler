@@ -38,7 +38,7 @@ func TestPushWorkflowMetrics_SendsIndividualLogEntries(t *testing.T) {
 	}))
 	defer server.Close()
 
-	backend := New(server.URL, "user", "key", "Axionic-Labs")
+	backend := New(server.URL, "user", "key", "ExampleOrg")
 	runs := []domain.WorkflowMetrics{
 		{RunID: 2, Repo: "repo-a", Workflow: "build", Conclusion: "success", DurationS: 90, RunNumber: 7, Event: "push", Branch: "main", CompletedAt: "2026-05-04T12:05:00Z"},
 		{RunID: 3, Repo: "repo-b", Workflow: "lint", Conclusion: "failure", DurationS: 45, RunNumber: 8, Event: "pull_request", Branch: "dev", CompletedAt: "2026-05-04T12:03:00Z"},
@@ -122,7 +122,7 @@ func TestPushWorkflowMetrics_SortsEqualAndMissingCompletedAtDeterministically(t 
 	}))
 	defer server.Close()
 
-	backend := New(server.URL, "user", "key", "Axionic-Labs")
+	backend := New(server.URL, "user", "key", "ExampleOrg")
 	runs := []domain.WorkflowMetrics{
 		{RunID: 3, Repo: "repo-a", Workflow: "build", Conclusion: "success", DurationS: 60, RunNumber: 9, Event: "push", Branch: "main"},
 		{RunID: 2, Repo: "repo-a", Workflow: "build", Conclusion: "success", DurationS: 55, RunNumber: 8, Event: "push", Branch: "main", CompletedAt: "2026-05-04T12:05:00Z"},
@@ -156,7 +156,7 @@ func TestPushWorkflowMetrics_SortsEqualAndMissingCompletedAtDeterministically(t 
 
 func TestPushRunnerMetrics_RetriesTemporaryTransportErrors(t *testing.T) {
 	attempts := 0
-	backend := New("https://logs.example/loki/api/v1/push", "user", "key", "Axionic-Labs")
+	backend := New("https://logs.example/loki/api/v1/push", "user", "key", "ExampleOrg")
 	backend.retries = []time.Duration{0}
 	backend.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		attempts++
@@ -191,7 +191,7 @@ func TestPushRunnerMetrics_RetriesServerErrors(t *testing.T) {
 	}))
 	defer server.Close()
 
-	backend := New(server.URL, "user", "key", "Axionic-Labs")
+	backend := New(server.URL, "user", "key", "ExampleOrg")
 	backend.retries = []time.Duration{0}
 
 	if err := backend.PushRunnerMetrics(context.Background(), domain.RunnerMetrics{TotalRunners: 1}); err != nil {
@@ -212,7 +212,7 @@ func TestPushHostMetrics_OmitsManagedRunnerFieldsWhenUnavailable(t *testing.T) {
 	}))
 	defer server.Close()
 
-	backend := New(server.URL, "user", "key", "Axionic-Labs")
+	backend := New(server.URL, "user", "key", "ExampleOrg")
 	metrics := domain.HostMetrics{
 		ContainersRunning: 3,
 		ContainersStopped: 12,
@@ -255,7 +255,7 @@ func TestPushRunnerMetrics_LabelsGroupID(t *testing.T) {
 	}))
 	defer server.Close()
 
-	backend := New(server.URL, "user", "key", "Axionic-Labs")
+	backend := New(server.URL, "user", "key", "ExampleOrg")
 	metrics := domain.RunnerMetrics{
 		GroupID:      "rust",
 		TotalRunners: 1,
@@ -283,7 +283,7 @@ func TestPushHostMetrics_LabelsGroupID(t *testing.T) {
 	}))
 	defer server.Close()
 
-	backend := New(server.URL, "user", "key", "Axionic-Labs")
+	backend := New(server.URL, "user", "key", "ExampleOrg")
 	metrics := domain.HostMetrics{
 		GroupID:           "typescript",
 		ContainersRunning: 2,
@@ -311,7 +311,7 @@ func TestPushIssueEvents_UsesObservedTimestamp(t *testing.T) {
 	}))
 	defer server.Close()
 
-	backend := New(server.URL, "user", "key", "Axionic-Labs")
+	backend := New(server.URL, "user", "key", "ExampleOrg")
 	observedAt := "2026-05-04T12:34:56Z"
 	issues := []domain.IssueEvent{{
 		Level:      "warn",

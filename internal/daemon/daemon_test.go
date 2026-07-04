@@ -268,7 +268,7 @@ func TestGroupsForEvent_FallsBackToAllGroupsWhenNoLabelsMatch(t *testing.T) {
 
 func TestGroupsForEvent_FiltersByOrgTargetBeforeLabelFallback(t *testing.T) {
 	d := &Daemon{groups: []RunnerGroup{
-		{ID: "axionic", Target: "Axionic-Labs", MatchLabels: []string{"self-hosted", "linux"}},
+		{ID: "old-customer", Target: "OldCustomer", MatchLabels: []string{"self-hosted", "linux"}},
 		{ID: "cac", Target: "cac-group", MatchLabels: []string{"runner-class-cac"}},
 	}}
 	event := &domain.WebhookEvent{

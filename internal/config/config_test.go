@@ -196,10 +196,10 @@ func TestRunnerClassConfigs_SkipsDisabledClasses(t *testing.T) {
 	cfg.RunnerClasses = []RunnerClassConfig{
 		{
 			Enabled: &disabled,
-			ID:      "axionic-disabled",
-			Org:     "Axionic-Labs",
-			Prefix:  "axionic-auto",
-			Labels:  "self-hosted,linux,x64,runner-class-axionic",
+			ID:      "old-customer-disabled",
+			Org:     "OldCustomer",
+			Prefix:  "old-customer-auto",
+			Labels:  "self-hosted,linux,x64,runner-class-old-customer",
 		},
 		{
 			ID:     "cac-group",
@@ -438,6 +438,38 @@ func TestLoad_ConfigExampleIsGenericStarter(t *testing.T) {
 	}
 	if !hasLabel(class.Labels, "runner-class-default") {
 		t.Fatalf("expected starter labels to include runner-class-default, got %q", class.Labels)
+	}
+}
+
+func TestLoad_Nodev2ConfigTargetsCACAndPersonalRepo(t *testing.T) {
+	t.Setenv("GH_SCALER_GITHUB_TOKEN", "token")
+	t.Setenv("GH_WEBHOOK_SECRET", "webhook-secret")
+	t.Setenv("LOKI_PUSH_URL", "https://logs.example/loki/api/v1/push")
+	t.Setenv("LOKI_USERNAME", "user")
+	t.Setenv("GRAFANA_CLOUD_API_KEY", "key")
+
+	cfg, err := Load("../../deploy/nodev2.config.toml")
+	if err != nil {
+		t.Fatalf("Load nodev2 config failed: %v", err)
+	}
+	classes, err := cfg.RunnerClassConfigs()
+	if err != nil {
+		t.Fatalf("RunnerClassConfigs failed: %v", err)
+	}
+	if len(classes) != 2 {
+		t.Fatalf("expected two nodev2 runner classes, got %d: %+v", len(classes), classes)
+	}
+
+	byID := make(map[string]RunnerClass, len(classes))
+	for _, class := range classes {
+		byID[class.ID] = class
+	}
+
+	if class := byID["cac-group"]; class.Org != "CAC-Group" || class.RepoScoped() {
+		t.Fatalf("expected CAC-Group org class, got %+v", class)
+	}
+	if class := byID["the-clearooor"]; class.Repo != "Cordtus/the-clearooor" || !class.RepoScoped() {
+		t.Fatalf("expected the-clearooor repo class, got %+v", class)
 	}
 }
 

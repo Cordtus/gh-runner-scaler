@@ -76,7 +76,7 @@ type WebhookEvent struct {
 	Type          WebhookEventType
 	EventType     string
 	Action        string
-	Repo          string // e.g. "Axionic-Labs/axionic-ui"
+	Repo          string // e.g. "ExampleOrg/example-repo"
 	Ref           string // e.g. "refs/heads/main"
 	DefaultBranch string // e.g. "main"
 	Branch        string
