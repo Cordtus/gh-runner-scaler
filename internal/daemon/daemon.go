@@ -351,7 +351,7 @@ func (d *Daemon) reconcileTargets(ctx context.Context, requested []string) error
 			continue
 		}
 		log := d.log.With("runner_group", group.ID)
-		log.Info("reconcile group started")
+		log.Debug("reconcile group started")
 		if err := group.Reconciler.Reconcile(ctx); err != nil {
 			log.Error("reconcile group failed", "error", err)
 			errs = append(errs, fmt.Errorf("%s: %w", group.ID, err))

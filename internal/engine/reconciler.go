@@ -14,6 +14,8 @@ import (
 	"github.com/Cordtus/gh-runner-scaler/internal/iface"
 )
 
+const runnerAvailabilityGrace = 2 * time.Minute
+
 // ReconcilerConfig holds the tuning parameters for the reconciler.
 type ReconcilerConfig struct {
 	Prefix         string
@@ -81,7 +83,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 	// 2. Build snapshot.
 	snap := buildSnapshot(runners, r.cfg.Prefix)
 	availableOnline := AvailableRunnerCountForLabels(runners, r.cfg.Labels)
-	r.log.Info("runner state",
+	r.log.Debug("runner state",
 		"event_type", "runner_state",
 		"total", snap.Total, "busy", snap.Busy, "idle", snap.Idle,
 		"auto", snap.Auto, "permanent", snap.Permanent, "available_online", availableOnline,
@@ -101,6 +103,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 	now := time.Now()
 	pass := &reconcilePass{}
 	removed := make(map[string]bool)
+	pendingCapacity := 0
 	handleScaleDown := func(name string) {
 		result := r.scaleDown(ctx, name, runners, pass)
 		if result.deleted {
@@ -122,16 +125,17 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 			c.Status = status
 		}
 
+		runner, runnerFound := findRunner(c.Name, runners)
 		switch {
 		case status == domain.StatusStopped:
 			// Ephemeral runner finished its job and stopped.
 			r.log.Info("container stopped (job complete)", "event_type", "scale_down", "action", "eligible", "container", c.Name, "runner", c.Name, "detail", "job complete")
 			handleScaleDown(c.Name)
 
-		case isRunnerBusy(c.Name, runners):
+		case runnerFound && runner.Busy:
 			r.state.SetLastActive(ctx, c.Name, now)
 
-		case !hasRunner(c.Name, runners):
+		case !runnerFound:
 			// Container exists but has no registered runner -- orphaned.
 			// This catches containers left behind by crashed scalers,
 			// failed config.sh, or manual intervention.
@@ -144,9 +148,12 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 			if err != nil {
 				// No state file -- initialize it.
 				r.state.SetLastActive(ctx, c.Name, now)
-				continue
+				lastActive = now
 			}
 			idleDur := now.Sub(lastActive)
+			if pendingRunnerCapacity(status, runner, r.cfg.Labels, idleDur, r.pendingAvailabilityGrace()) {
+				pendingCapacity++
+			}
 			if idleDur >= r.cfg.IdleTimeout {
 				r.log.Info("container idle past timeout",
 					"event_type", "scale_down", "action", "eligible", "container", c.Name, "runner", c.Name, "idle", idleDur.Round(time.Second),
@@ -157,8 +164,8 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 	}
 
 	// 5. Scale up: no online idle runners are available and we're under the cap.
-	if availableOnline == 0 && autoCount < r.cfg.MaxAutoRunners {
-		r.log.Info("all runners busy, scaling up", "event_type", "scale_up", "action", "requested")
+	if availableOnline == 0 && pendingCapacity == 0 && autoCount < r.cfg.MaxAutoRunners {
+		r.log.Info("no available runners, scaling up", "event_type", "scale_up", "action", "requested")
 		if err := r.scaleUp(ctx, filterRemovedContainers(containers, removed)); err != nil {
 			r.log.Error("scale-up failed", "event_type", "scale_up", "action", "failed", "error", err)
 		}
@@ -423,22 +430,30 @@ func buildSnapshot(runners []domain.Runner, prefix string) domain.RunnerSnapshot
 	return snap
 }
 
-func isRunnerBusy(containerName string, runners []domain.Runner) bool {
-	for _, r := range runners {
-		if r.Name == containerName && r.Busy {
-			return true
-		}
-	}
-	return false
-}
-
-func hasRunner(containerName string, runners []domain.Runner) bool {
+func findRunner(containerName string, runners []domain.Runner) (domain.Runner, bool) {
 	for _, r := range runners {
 		if r.Name == containerName {
-			return true
+			return r, true
 		}
 	}
-	return false
+	return domain.Runner{}, false
+}
+
+func (r *Reconciler) pendingAvailabilityGrace() time.Duration {
+	if r.cfg.IdleTimeout > 0 && r.cfg.IdleTimeout < runnerAvailabilityGrace {
+		return r.cfg.IdleTimeout
+	}
+	return runnerAvailabilityGrace
+}
+
+func pendingRunnerCapacity(status domain.ContainerStatus, runner domain.Runner, labels string, idleDur, grace time.Duration) bool {
+	if status != domain.StatusRunning || runner.Busy || runner.Status == "online" {
+		return false
+	}
+	if grace <= 0 || idleDur > grace {
+		return false
+	}
+	return runnerHasLabels(runner, labelsSet(labels))
 }
 
 // AvailableRunnerCount returns the number of runners that are both online and idle.

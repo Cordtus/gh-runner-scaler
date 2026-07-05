@@ -404,6 +404,70 @@ func TestScaleUp_WhenOnlyOfflineRunnerExists(t *testing.T) {
 	}
 }
 
+func TestNoScaleUp_WhenRecentAutoRunnerIsWaitingForGitHubAvailability(t *testing.T) {
+	runtime := newMockRuntime()
+	runtime.containers["auto-1"] = domain.StatusRunning
+
+	ci := &mockCI{
+		runners: []domain.Runner{
+			{
+				ID:     1,
+				Name:   "auto-1",
+				Busy:   false,
+				Status: "offline",
+				Labels: []string{"self-hosted"},
+			},
+		},
+		regToken: "test-token",
+		prefix:   "auto",
+	}
+	state := newMockState()
+	state.states["auto-1"] = time.Now()
+	r := newTestReconciler(runtime, ci, state, nil)
+
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if _, ok := runtime.containers["auto-2"]; ok {
+		t.Fatal("should not scale up while a recent running auto runner is still becoming available")
+	}
+}
+
+func TestScaleUp_WhenAutoRunnerStillUnavailableAfterGracePeriod(t *testing.T) {
+	runtime := newMockRuntime()
+	runtime.containers["auto-1"] = domain.StatusRunning
+
+	ci := &mockCI{
+		runners: []domain.Runner{
+			{
+				ID:     1,
+				Name:   "auto-1",
+				Busy:   false,
+				Status: "offline",
+				Labels: []string{"self-hosted"},
+			},
+		},
+		regToken: "test-token",
+		prefix:   "auto",
+	}
+	state := newMockState()
+	state.states["auto-1"] = time.Now().Add(-(runnerAvailabilityGrace + time.Second))
+	r := newTestReconciler(runtime, ci, state, nil)
+
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if _, ok := runtime.containers["auto-2"]; !ok {
+		t.Fatal("expected scale-up after an auto runner stayed unavailable beyond the grace period")
+	}
+}
+
 func TestNoScaleUp_WhenAtMax(t *testing.T) {
 	runtime := newMockRuntime()
 	runtime.containers["auto-1"] = domain.StatusRunning

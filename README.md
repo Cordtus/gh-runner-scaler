@@ -694,8 +694,11 @@ Expected output on a healthy start:
 ```
 level=INFO msg="daemon started" poll_interval=30s webhook=true metrics=false
 level=INFO msg="webhook server listening" addr=:9876
-level=INFO msg="runner state" total=1 busy=0 idle=1 auto=1 permanent=0
 ```
+
+Routine reconcile start and runner-state snapshots are debug-level logs. Normal `INFO`
+output should stay focused on lifecycle events such as scale-up, scale-down, webhook
+handling, and service startup.
 
 ### Performance follow-ups
 
