@@ -60,12 +60,26 @@ curl http://127.0.0.1:9876/healthz
 runs-on: [self-hosted, linux, x64, runner-class-default]
 ```
 
+For this repository, the default is:
+
+```yaml
+runs-on: [self-hosted, linux, x64, runner-class-gh-runner-scaler]
+```
+
+This repo currently provisions nodev2-based runners, so include those labels as well:
+
+```yaml
+runs-on: [self-hosted, linux, x64, nodev2, docker, runner-class-gh-runner-scaler]
+```
+
 ## Nodev2 Targets
 
 The checked-in nodev2 target config lives at `deploy/nodev2.config.toml`. It
 serves `CAC-Group` as an organization-scoped target and `Cordtus/the-clearooor`
-as a repo-scoped personal target. No former customer organizations are
-configured for this deployment.
+as a repo-scoped personal target. It also includes a dedicated repo-scoped class
+for `Cordtus/gh-runner-scaler` so this repository can use scaler runners
+without extra workflow wiring. No former customer organizations are configured
+for this deployment.
 
 GitHub does not provide one self-hosted runner pool for every repository owned
 by a personal user account. Personal repositories must be added as repo-scoped
@@ -306,6 +320,23 @@ For Grafana Cloud:
 | API key | Grafana Cloud > API Keys > create with Loki write scope |
 
 For self-managed Loki, use the Loki push URL and credentials configured for your deployment. If your local Loki has `auth_enabled: false`, set only `LOKI_PUSH_URL`.
+
+Import the repo-maintained baseline dashboard with the available service-account key:
+
+```bash
+export GRAFANA_API_URL="https://your-grafana-host"
+export GRAFANA_SERVICE_ACCOUNT_TOKEN="${GRAFANA_CLOUD_API_KEY}"
+
+jq -c '{dashboard: ., overwrite: true}' deploy/grafana-dashboard.json | \
+  curl -sS -X POST "${GRAFANA_API_URL}/api/dashboards/db" \
+    -H "Authorization: Bearer ${GRAFANA_SERVICE_ACCOUNT_TOKEN}" \
+    -H "Content-Type: application/json" \
+    --data-binary @-
+```
+
+If your Grafana Loki datasource UID is not `loki`, replace every datasource UID in
+the dashboard JSON or remap it in Grafana after import; otherwise no data will
+render in panels.
 
 ---
 

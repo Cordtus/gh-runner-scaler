@@ -6,7 +6,7 @@ on:
 
 jobs:
   go:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, nodev2, docker, runner-class-gh-runner-scaler]
 
     steps:
       - name: Check out repository
