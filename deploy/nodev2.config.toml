@@ -81,6 +81,16 @@ max_auto_runners = 4
 runner_work_dir = "_work"
 template = "gh-runner-template"
 
+[[runner_classes]]
+id = "qmkui"
+repo = "Cordtus/qmkui"
+prefix = "gh-runner-qmkui"
+labels = "self-hosted,linux,x64,nodev2,docker,runner-class-qmkui"
+match_labels = ["self-hosted", "linux", "x64", "nodev2", "docker", "runner-class-qmkui"]
+max_auto_runners = 2
+runner_work_dir = "_work"
+template = "gh-runner-template"
+
 [webhook]
 enabled = true
 port = 9876
