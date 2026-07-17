@@ -468,7 +468,7 @@ func TestLoad_ConfigExampleIsGenericStarter(t *testing.T) {
 	}
 }
 
-func TestLoad_Nodev2ConfigTargetsCACAndPersonalRepo(t *testing.T) {
+func TestLoad_Nodev2ConfigTargetsCACAndPersonalRepos(t *testing.T) {
 	t.Setenv("GH_SCALER_GITHUB_TOKEN", "token")
 	t.Setenv("GH_WEBHOOK_SECRET", "webhook-secret")
 	t.Setenv("LOKI_PUSH_URL", "https://logs.example/loki/api/v1/push")
@@ -485,8 +485,8 @@ func TestLoad_Nodev2ConfigTargetsCACAndPersonalRepo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunnerClassConfigs failed: %v", err)
 	}
-	if len(classes) != 2 {
-		t.Fatalf("expected two nodev2 runner classes, got %d: %+v", len(classes), classes)
+	if len(classes) != 4 {
+		t.Fatalf("expected four nodev2 runner classes, got %d: %+v", len(classes), classes)
 	}
 
 	byID := make(map[string]RunnerClass, len(classes))
@@ -499,6 +499,19 @@ func TestLoad_Nodev2ConfigTargetsCACAndPersonalRepo(t *testing.T) {
 	}
 	if class := byID["the-clearooor"]; class.Repo != "Cordtus/the-clearooor" || !class.RepoScoped() {
 		t.Fatalf("expected the-clearooor repo class, got %+v", class)
+	}
+	qmkui := byID["qmkui"]
+	if qmkui.Repo != "Cordtus/qmkui" || !qmkui.RepoScoped() {
+		t.Fatalf("expected qmkui repo class, got %+v", qmkui)
+	}
+	if qmkui.Prefix != "gh-runner-qmkui" || qmkui.MaxAutoRunners != 2 || qmkui.RunnerWorkDir != "_work" || qmkui.Template != "gh-runner-template" {
+		t.Fatalf("unexpected qmkui runner settings: %+v", qmkui)
+	}
+	if qmkui.Labels != "self-hosted,linux,x64,nodev2,docker,runner-class-qmkui" {
+		t.Fatalf("unexpected qmkui labels: %q", qmkui.Labels)
+	}
+	if got := strings.Join(qmkui.MatchLabels, ","); got != "self-hosted,linux,x64,nodev2,docker,runner-class-qmkui" {
+		t.Fatalf("unexpected qmkui match labels: %q", got)
 	}
 }
 

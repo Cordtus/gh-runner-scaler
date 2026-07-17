@@ -75,11 +75,10 @@ runs-on: [self-hosted, linux, x64, nodev2, docker, runner-class-gh-runner-scaler
 ## Nodev2 Targets
 
 The checked-in nodev2 target config lives at `deploy/nodev2.config.toml`. It
-serves `CAC-Group` as an organization-scoped target and `Cordtus/the-clearooor`
-as a repo-scoped personal target. It also includes a dedicated repo-scoped class
-for `Cordtus/gh-runner-scaler` so this repository can use scaler runners
-without extra workflow wiring. No former customer organizations are configured
-for this deployment.
+serves `CAC-Group` as an organization-scoped target and has dedicated
+repo-scoped classes for `Cordtus/gh-runner-scaler`, `Cordtus/the-clearooor`, and
+`Cordtus/qmkui`. No former customer organizations are configured for this
+deployment.
 
 GitHub does not provide one self-hosted runner pool for every repository owned
 by a personal user account. Personal repositories must be added as repo-scoped
