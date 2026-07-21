@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -468,7 +469,7 @@ func TestLoad_ConfigExampleIsGenericStarter(t *testing.T) {
 	}
 }
 
-func TestLoad_Nodev2ConfigTargetsCACAndPersonalRepo(t *testing.T) {
+func TestLoad_Nodev2ConfigIncludesRequiredRunnerTargets(t *testing.T) {
 	t.Setenv("GH_SCALER_GITHUB_TOKEN", "token")
 	t.Setenv("GH_WEBHOOK_SECRET", "webhook-secret")
 	t.Setenv("LOKI_PUSH_URL", "https://logs.example/loki/api/v1/push")
@@ -485,21 +486,50 @@ func TestLoad_Nodev2ConfigTargetsCACAndPersonalRepo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunnerClassConfigs failed: %v", err)
 	}
-	if len(classes) != 2 {
-		t.Fatalf("expected two nodev2 runner classes, got %d: %+v", len(classes), classes)
-	}
-
 	byID := make(map[string]RunnerClass, len(classes))
 	for _, class := range classes {
+		if _, exists := byID[class.ID]; exists {
+			t.Fatalf("duplicate nodev2 runner class ID %q", class.ID)
+		}
 		byID[class.ID] = class
 	}
 
-	if class := byID["cac-group"]; class.Org != "CAC-Group" || class.RepoScoped() {
-		t.Fatalf("expected CAC-Group org class, got %+v", class)
+	expected := map[string]struct {
+		org        string
+		repo       string
+		repoScoped bool
+	}{
+		"cac-group": {
+			org: "CAC-Group",
+		},
+		"gh-runner-scaler": {
+			repo:       "Cordtus/gh-runner-scaler",
+			repoScoped: true,
+		},
+		"the-clearooor": {
+			repo:       "Cordtus/the-clearooor",
+			repoScoped: true,
+		},
 	}
-	if class := byID["the-clearooor"]; class.Repo != "Cordtus/the-clearooor" || !class.RepoScoped() {
-		t.Fatalf("expected the-clearooor repo class, got %+v", class)
+
+	for id, want := range expected {
+		class, ok := byID[id]
+		if !ok {
+			t.Fatalf("missing required nodev2 runner class %q; got IDs %v", id, sortedClassIDs(byID))
+		}
+		if class.Org != want.org || class.Repo != want.repo || class.RepoScoped() != want.repoScoped {
+			t.Fatalf("nodev2 runner class %q = org %q repo %q repoScoped %v; want org %q repo %q repoScoped %v", id, class.Org, class.Repo, class.RepoScoped(), want.org, want.repo, want.repoScoped)
+		}
 	}
+}
+
+func sortedClassIDs(classes map[string]RunnerClass) []string {
+	ids := make([]string, 0, len(classes))
+	for id := range classes {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 func hasLabel(labels, want string) bool {
