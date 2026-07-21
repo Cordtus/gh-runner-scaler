@@ -510,6 +510,10 @@ func TestLoad_Nodev2ConfigIncludesRequiredRunnerTargets(t *testing.T) {
 			repo:       "Cordtus/the-clearooor",
 			repoScoped: true,
 		},
+		"qmkui": {
+			repo:       "Cordtus/qmkui",
+			repoScoped: true,
+		},
 	}
 
 	for id, want := range expected {
@@ -520,6 +524,19 @@ func TestLoad_Nodev2ConfigIncludesRequiredRunnerTargets(t *testing.T) {
 		if class.Org != want.org || class.Repo != want.repo || class.RepoScoped() != want.repoScoped {
 			t.Fatalf("nodev2 runner class %q = org %q repo %q repoScoped %v; want org %q repo %q repoScoped %v", id, class.Org, class.Repo, class.RepoScoped(), want.org, want.repo, want.repoScoped)
 		}
+	}
+	qmkui := byID["qmkui"]
+	if qmkui.Repo != "Cordtus/qmkui" || !qmkui.RepoScoped() {
+		t.Fatalf("expected qmkui repo class, got %+v", qmkui)
+	}
+	if qmkui.Prefix != "gh-runner-qmkui" || qmkui.MaxAutoRunners != 2 || qmkui.RunnerWorkDir != "_work" || qmkui.Template != "gh-runner-template" {
+		t.Fatalf("unexpected qmkui runner settings: %+v", qmkui)
+	}
+	if qmkui.Labels != "self-hosted,linux,x64,nodev2,docker,runner-class-qmkui" {
+		t.Fatalf("unexpected qmkui labels: %q", qmkui.Labels)
+	}
+	if got := strings.Join(qmkui.MatchLabels, ","); got != "self-hosted,linux,x64,nodev2,docker,runner-class-qmkui" {
+		t.Fatalf("unexpected qmkui match labels: %q", got)
 	}
 }
 
