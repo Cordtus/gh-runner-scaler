@@ -220,6 +220,17 @@ collect_host = true
 
 [metrics.loki]
 
+[runner_observability]
+# Endpoint values come from RUNNER_LOG_LOKI_PUSH_URL and
+# RUNNER_LOG_LOKI_HEALTH_URL in /etc/gh-runner-scaler/env. They must point to
+# the internal unauthenticated Loki service; credentials are never copied into runners.
+enabled = true
+max_retries = 3
+initial_backoff = "1s"
+max_backoff = "1m"
+max_source_bytes = 16777216
+max_lifecycle_bytes = 134217728
+
 [state]
 provider = "filesystem"
 

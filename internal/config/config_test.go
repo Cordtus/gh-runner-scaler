@@ -33,6 +33,34 @@ func TestValidate_MetricsRequiresPushURLAndOptionalAuthPair(t *testing.T) {
 	}
 }
 
+func TestValidate_RunnerObservabilityRequiresEndpointsAndRejectsCredentials(t *testing.T) {
+	cfg := validConfig()
+	cfg.RunnerObservability.Enabled = true
+
+	err := validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "RUNNER_LOG_LOKI_PUSH_URL") {
+		t.Fatalf("validate error = %v, want missing push URL", err)
+	}
+
+	cfg.RunnerObservability.PushURL = "http://loki.internal/loki/api/v1/push"
+	err = validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "RUNNER_LOG_LOKI_HEALTH_URL") {
+		t.Fatalf("validate error = %v, want missing health URL", err)
+	}
+
+	cfg.RunnerObservability.HealthURL = "http://loki.internal/ready"
+	cfg.RunnerObservability.CredentialConfigured = true
+	err = validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "must not use credentials") {
+		t.Fatalf("validate error = %v, want credential rejection", err)
+	}
+
+	cfg.RunnerObservability.CredentialConfigured = false
+	if err := validate(cfg); err != nil {
+		t.Fatalf("validate configured runner observability: %v", err)
+	}
+}
+
 func TestValidate_CacheRequiresAbsolutePaths(t *testing.T) {
 	cfg := validConfig()
 	cfg.Cache.Enabled = true
@@ -477,6 +505,11 @@ func TestLoad_Nodev2ConfigIncludesRequiredRunnerTargets(t *testing.T) {
 	t.Setenv("LOKI_API_KEY", "")
 	t.Setenv("LOKI_PASSWORD", "")
 	t.Setenv("GRAFANA_CLOUD_API_KEY", "")
+	t.Setenv("RUNNER_LOG_LOKI_PUSH_URL", "http://192.168.0.157:3100/loki/api/v1/push")
+	t.Setenv("RUNNER_LOG_LOKI_HEALTH_URL", "http://192.168.0.157:3100/ready")
+	t.Setenv("RUNNER_LOG_LOKI_USERNAME", "")
+	t.Setenv("RUNNER_LOG_LOKI_PASSWORD", "")
+	t.Setenv("RUNNER_LOG_LOKI_API_KEY", "")
 
 	cfg, err := Load("../../deploy/nodev2.config.toml")
 	if err != nil {

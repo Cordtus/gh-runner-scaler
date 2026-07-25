@@ -78,6 +78,17 @@ org = ""                       # org-scoped runners; set either org or repo
 [ci.github]
 # Webhook secret: set GH_WEBHOOK_SECRET env var
 
+[runner_observability]
+# Keep disabled until RUNNER_LOG_LOKI_PUSH_URL and RUNNER_LOG_LOKI_HEALTH_URL
+# point at an internal unauthenticated Loki endpoint. Never set credentials for
+# this feature: ephemeral runner containers must not receive service secrets.
+enabled = false
+max_retries = 3
+initial_backoff = "1s"
+max_backoff = "1m"
+max_source_bytes = 16777216
+max_lifecycle_bytes = 134217728
+
 # Optional multi-class router configuration.
 # If no [[runner_classes]] entries are present, the daemon synthesizes a single
 # "default" runner class from [scaler], [container], [cache], and [ci] above.

@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,15 +16,16 @@ import (
 
 // Config is the top-level configuration structure.
 type Config struct {
-	Scaler        ScalerConfig           `toml:"scaler"`
-	Container     ContainerConfig        `toml:"container"`
-	Cache         CacheConfig            `toml:"cache"`
-	CacheProfiles map[string]CacheConfig `toml:"cache_profiles"`
-	CI            CIConfig               `toml:"ci"`
-	RunnerClasses []RunnerClassConfig    `toml:"runner_classes"`
-	Webhook       WebhookConfig          `toml:"webhook"`
-	Metrics       MetricsConfig          `toml:"metrics"`
-	State         StateConfig            `toml:"state"`
+	Scaler              ScalerConfig              `toml:"scaler"`
+	Container           ContainerConfig           `toml:"container"`
+	Cache               CacheConfig               `toml:"cache"`
+	CacheProfiles       map[string]CacheConfig    `toml:"cache_profiles"`
+	CI                  CIConfig                  `toml:"ci"`
+	RunnerClasses       []RunnerClassConfig       `toml:"runner_classes"`
+	Webhook             WebhookConfig             `toml:"webhook"`
+	Metrics             MetricsConfig             `toml:"metrics"`
+	RunnerObservability RunnerObservabilityConfig `toml:"runner_observability"`
+	State               StateConfig               `toml:"state"`
 }
 
 // ScalerConfig controls the core scaling behavior.
@@ -151,6 +153,20 @@ type LokiConfig struct {
 	APIKey   string `toml:"-"` // from LOKI_API_KEY, LOKI_PASSWORD, or GRAFANA_CLOUD_API_KEY env
 }
 
+// RunnerObservabilityConfig controls per-runner diagnostic and job-log delivery.
+// Credentials are deliberately rejected: ephemeral containers use an internal endpoint only.
+type RunnerObservabilityConfig struct {
+	Enabled              bool     `toml:"enabled"`
+	PushURL              string   `toml:"-"`
+	HealthURL            string   `toml:"-"`
+	CredentialConfigured bool     `toml:"-"`
+	MaxRetries           int      `toml:"max_retries"`
+	InitialBackoff       Duration `toml:"initial_backoff"`
+	MaxBackoff           Duration `toml:"max_backoff"`
+	MaxSourceBytes       int64    `toml:"max_source_bytes"`
+	MaxLifecycleBytes    int64    `toml:"max_lifecycle_bytes"`
+}
+
 // StateConfig selects and configures the state store provider.
 type StateConfig struct {
 	Provider   string          `toml:"provider"`
@@ -235,6 +251,7 @@ func defaults() *Config {
 			WorkflowRepoBatchSize: 25,
 			CollectHost:           true,
 		},
+		RunnerObservability: RunnerObservabilityConfig{MaxRetries: 3, InitialBackoff: Duration{time.Second}, MaxBackoff: Duration{time.Minute}, MaxSourceBytes: 16 << 20, MaxLifecycleBytes: 128 << 20},
 		State: StateConfig{
 			Provider:   "filesystem",
 			Filesystem: FilesystemState{Dir: ".state"},
@@ -269,6 +286,13 @@ func applyEnvOverrides(cfg *Config) {
 	} else if v := os.Getenv("GRAFANA_CLOUD_API_KEY"); v != "" {
 		cfg.Metrics.Loki.APIKey = v
 	}
+	if v := os.Getenv("RUNNER_LOG_LOKI_PUSH_URL"); v != "" {
+		cfg.RunnerObservability.PushURL = v
+	}
+	if v := os.Getenv("RUNNER_LOG_LOKI_HEALTH_URL"); v != "" {
+		cfg.RunnerObservability.HealthURL = v
+	}
+	cfg.RunnerObservability.CredentialConfigured = os.Getenv("RUNNER_LOG_LOKI_USERNAME") != "" || os.Getenv("RUNNER_LOG_LOKI_PASSWORD") != "" || os.Getenv("RUNNER_LOG_LOKI_API_KEY") != ""
 }
 
 // validate checks that required fields are present.
@@ -349,8 +373,30 @@ func validate(cfg *Config) error {
 	if cfg.Metrics.WorkflowRepoBatchSize < 0 {
 		return fmt.Errorf("metrics.workflow_repo_batch_size must be >= 0")
 	}
+	if err := validateRunnerObservability(cfg.RunnerObservability); err != nil {
+		return err
+	}
 	if cfg.State.Filesystem.Dir == "" {
 		return fmt.Errorf("state.filesystem.dir is required")
+	}
+	return nil
+}
+
+func validateRunnerObservability(cfg RunnerObservabilityConfig) error {
+	if !cfg.Enabled {
+		return nil
+	}
+	if cfg.CredentialConfigured {
+		return fmt.Errorf("runner_observability must not use credentials")
+	}
+	for name, raw := range map[string]string{"RUNNER_LOG_LOKI_PUSH_URL": cfg.PushURL, "RUNNER_LOG_LOKI_HEALTH_URL": cfg.HealthURL} {
+		u, err := url.ParseRequestURI(raw)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return fmt.Errorf("%s is required and must be an absolute URL", name)
+		}
+	}
+	if cfg.MaxRetries < 0 || cfg.InitialBackoff.Duration <= 0 || cfg.MaxBackoff.Duration < cfg.InitialBackoff.Duration || cfg.MaxSourceBytes <= 0 || cfg.MaxLifecycleBytes < cfg.MaxSourceBytes {
+		return fmt.Errorf("runner_observability has invalid retry or size limits")
 	}
 	return nil
 }
