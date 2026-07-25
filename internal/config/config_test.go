@@ -514,6 +514,18 @@ func TestLoad_Nodev2ConfigIncludesRequiredRunnerTargets(t *testing.T) {
 			repo:       "Cordtus/qmkui",
 			repoScoped: true,
 		},
+		"node": {
+			repo:       "Cordtus/poolbet",
+			repoScoped: true,
+		},
+		"node-foundry": {
+			repo:       "Cordtus/poolbet",
+			repoScoped: true,
+		},
+		"node-browser": {
+			repo:       "Cordtus/poolbet",
+			repoScoped: true,
+		},
 	}
 
 	for id, want := range expected {

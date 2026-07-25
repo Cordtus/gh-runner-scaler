@@ -29,6 +29,86 @@ max_age = "336h"
 temp_max_age = "6h"
 paths = ["/cache/buildx"]
 
+[cache_profiles.node]
+enabled = true
+pool = "pool9"
+volume = "runner-cache"
+
+[cache_profiles.node.prune]
+enabled = true
+interval = "24h"
+max_age = "336h"
+temp_max_age = "6h"
+paths = ["/cache/buildx"]
+
+[[cache_profiles.node.symlinks]]
+source = "/cache/npm"
+target = "/home/runner/.npm"
+
+[[cache_profiles.node.symlinks]]
+source = "/cache/pnpm"
+target = "/home/runner/.local/share/pnpm/store"
+
+[[cache_profiles.node.symlinks]]
+source = "/cache/tool-cache"
+target = "/opt/hostedtoolcache"
+
+[cache_profiles.node-foundry]
+enabled = true
+pool = "pool9"
+volume = "runner-cache-foundry"
+
+[cache_profiles.node-foundry.prune]
+enabled = true
+interval = "24h"
+max_age = "336h"
+temp_max_age = "6h"
+paths = ["/cache/buildx"]
+
+[[cache_profiles.node-foundry.symlinks]]
+source = "/cache/npm"
+target = "/home/runner/.npm"
+
+[[cache_profiles.node-foundry.symlinks]]
+source = "/cache/pnpm"
+target = "/home/runner/.local/share/pnpm/store"
+
+[[cache_profiles.node-foundry.symlinks]]
+source = "/cache/foundry"
+target = "/home/runner/.foundry"
+
+[[cache_profiles.node-foundry.symlinks]]
+source = "/cache/tool-cache"
+target = "/opt/hostedtoolcache"
+
+[cache_profiles.node-browser]
+enabled = true
+pool = "pool9"
+volume = "runner-cache-browser"
+
+[cache_profiles.node-browser.prune]
+enabled = true
+interval = "24h"
+max_age = "336h"
+temp_max_age = "6h"
+paths = ["/cache/buildx"]
+
+[[cache_profiles.node-browser.symlinks]]
+source = "/cache/npm"
+target = "/home/runner/.npm"
+
+[[cache_profiles.node-browser.symlinks]]
+source = "/cache/pnpm"
+target = "/home/runner/.local/share/pnpm/store"
+
+[[cache_profiles.node-browser.symlinks]]
+source = "/cache/ms-playwright"
+target = "/home/runner/.cache/ms-playwright"
+
+[[cache_profiles.node-browser.symlinks]]
+source = "/cache/tool-cache"
+target = "/opt/hostedtoolcache"
+
 [[cache.symlinks]]
 source = "/cache/npm"
 target = "/home/runner/.npm"
@@ -90,6 +170,39 @@ match_labels = ["self-hosted", "linux", "x64", "nodev2", "docker", "runner-class
 max_auto_runners = 2
 runner_work_dir = "_work"
 template = "gh-runner-template"
+
+[[runner_classes]]
+id = "node"
+repo = "Cordtus/poolbet"
+prefix = "gh-runner-node"
+labels = "self-hosted,linux,x64,nodev2,docker,runner-class-node"
+match_labels = ["self-hosted", "linux", "x64", "nodev2", "docker", "runner-class-node"]
+max_auto_runners = 2
+runner_work_dir = "_work"
+template = "gh-runner-template"
+cache_profile = "node"
+
+[[runner_classes]]
+id = "node-foundry"
+repo = "Cordtus/poolbet"
+prefix = "gh-runner-node-foundry"
+labels = "self-hosted,linux,x64,nodev2,docker,runner-class-node-foundry"
+match_labels = ["self-hosted", "linux", "x64", "nodev2", "docker", "runner-class-node-foundry"]
+max_auto_runners = 2
+runner_work_dir = "_work"
+template = "gh-runner-template"
+cache_profile = "node-foundry"
+
+[[runner_classes]]
+id = "node-browser"
+repo = "Cordtus/poolbet"
+prefix = "gh-runner-node-browser"
+labels = "self-hosted,linux,x64,nodev2,docker,runner-class-node-browser"
+match_labels = ["self-hosted", "linux", "x64", "nodev2", "docker", "runner-class-node-browser"]
+max_auto_runners = 2
+runner_work_dir = "_work"
+template = "gh-runner-template"
+cache_profile = "node-browser"
 
 [webhook]
 enabled = true

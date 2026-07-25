@@ -75,16 +75,18 @@ runs-on: [self-hosted, linux, x64, nodev2, docker, runner-class-gh-runner-scaler
 ## Nodev2 Targets
 
 The checked-in nodev2 target config lives at `deploy/nodev2.config.toml`. It
-serves `CAC-Group` as an organization-scoped target and has dedicated
-repo-scoped classes for `Cordtus/gh-runner-scaler`, `Cordtus/the-clearooor`, and
-`Cordtus/qmkui`. No former customer organizations are configured for this
-deployment.
+serves `CAC-Group` as an organization-scoped target. Its workload classes are
+generic: `node`, `node-foundry`, and `node-browser` provide the Node.js,
+Node.js-plus-Foundry, and Node.js-plus-Playwright cache profiles used by
+Poolbet. The GitHub registration for those classes is repo-scoped only because
+GitHub does not offer an owner-wide runner pool for personal repositories; the
+repository name is not part of the workflow routing label.
 
 GitHub does not provide one self-hosted runner pool for every repository owned
-by a personal user account. Personal repositories must be added as repo-scoped
-runner classes, one `owner/name` repository at a time. Use the `the-clearooor`
-class in `deploy/nodev2.config.toml` as the template for additional
-`Cordtus/*` projects.
+by a personal user account. Add a repo-scoped registration only to make a
+generic workload class available to that repository. Reuse the workload labels
+and cache profiles whenever they fit; add a new class only when its toolchain,
+resource, isolation, or cache needs materially differ.
 
 The live service reads `/etc/gh-runner-scaler/config.toml`; after changing the
 tracked nodev2 config, install it to that path and restart
