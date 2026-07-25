@@ -84,7 +84,7 @@ type Bootstrapper interface {
 }
 ```
 
-`Prepare` probes `HealthURL` with a five-second timeout, at most `MaxRetries + 1` attempts, capped exponential backoff, and context cancellation. Treat 2xx as ready; 4xx except 429 as permanent; transport/429/5xx as transient. On success write YAML atomically through a base64 payload, clear only this clone's `_diag` and `_work` old contents, then run `systemctl enable --now promtail.service`. Do not interpolate YAML or labels into shell text.
+`Prepare` probes `HealthURL` with a five-second timeout, at most `MaxRetries + 1` attempts, capped exponential backoff, and context cancellation. Treat 2xx as ready; 4xx except 429 as permanent; transport/429/5xx as transient. On success write YAML atomically through a base64 payload, then run `systemctl enable --now promtail.service`. Do not interpolate YAML or labels into shell text. The template-preparation task, not provisioning, clears inherited logs so runner-registration diagnostics are retained.
 
 - [ ] **Step 4: Add component tests.** With `httptest.NewServer`: 204 starts Promtail; 401 makes one request and no executor command; two 503s then 204 retry and start. A fake executor proves write-before-service-start.
 
