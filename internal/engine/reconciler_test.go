@@ -14,20 +14,22 @@ import (
 // --- Mock providers ---
 
 type mockRuntime struct {
-	mu          sync.Mutex
-	containers  map[string]domain.ContainerStatus
-	listed      map[string]domain.ContainerStatus
-	execCalls   [][]string
-	listCalls   int
-	statusCalls int
-	cloneCalls  int
-	cloneHook   func(name string) error
-	execHook    func(cmd []string) error
-	statusErr   map[string]error
-	cloneErr    error
-	execErr     error
-	stopErr     error
-	deleteErr   error
+	mu                      sync.Mutex
+	containers              map[string]domain.ContainerStatus
+	listed                  map[string]domain.ContainerStatus
+	execCalls               [][]string
+	listCalls               int
+	statusCalls             int
+	cloneCalls              int
+	requireServiceUninstall bool
+	serviceInstalled        bool
+	cloneHook               func(name string) error
+	execHook                func(cmd []string) error
+	statusErr               map[string]error
+	cloneErr                error
+	execErr                 error
+	stopErr                 error
+	deleteErr               error
 }
 
 func newMockRuntime() *mockRuntime {
@@ -84,6 +86,14 @@ func (m *mockRuntime) ExecCommand(_ context.Context, _ string, cmd []string) (st
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.execCalls = append(m.execCalls, cmd)
+	if m.requireServiceUninstall {
+		if len(cmd) == 3 && cmd[0] == "bash" && cmd[1] == "-c" && cmd[2] == "cd "+runnerInstallDir+" && ./svc.sh uninstall" {
+			m.serviceInstalled = false
+		}
+		if len(cmd) > 0 && cmd[0] == "su" && m.serviceInstalled {
+			return "", errors.New("runner service must be uninstalled before deregistration")
+		}
+	}
 	if m.execHook != nil {
 		if err := m.execHook(cmd); err != nil {
 			return "", err
@@ -820,6 +830,29 @@ func TestScaleDown_SkipsAPIDeleteWhenRunnerStillBusy(t *testing.T) {
 	}
 	if len(ci.deletedIDs) != 0 {
 		t.Fatalf("deleted runner IDs = %v, want none", ci.deletedIDs)
+	}
+}
+
+func TestScaleDown_UninstallsServiceBeforeDeregisteringRunner(t *testing.T) {
+	runtime := newMockRuntime()
+	runtime.containers["auto-1"] = domain.StatusRunning
+	runtime.requireServiceUninstall = true
+	runtime.serviceInstalled = true
+	ci := &mockCI{
+		runners:     []domain.Runner{{ID: 1, Name: "auto-1", Status: "offline"}},
+		removeToken: "remove-token",
+		prefix:      "auto",
+	}
+	state := newMockState()
+	state.states["auto-1"] = time.Now()
+	r := newTestReconciler(runtime, ci, state, nil)
+
+	result := r.scaleDown(context.Background(), "auto-1", ci.runners, &reconcilePass{})
+	if result.err != nil {
+		t.Fatalf("scaleDown returned error: %v", result.err)
+	}
+	if runtime.serviceInstalled {
+		t.Fatal("runner service remained installed after scale-down")
 	}
 }
 

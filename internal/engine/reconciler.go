@@ -392,9 +392,16 @@ func (r *Reconciler) scaleDown(ctx context.Context, name string, runners []domai
 	var errs []error
 	result := scaleDownResult{}
 
-	// Stop runner service (best-effort).
+	// Stop and uninstall the service before config.sh removes the registration.
+	serviceStopped := true
 	if _, err := r.runtime.ExecCommand(ctx, name, []string{"bash", "-c", "cd " + runnerInstallDir + " && ./svc.sh stop"}); err != nil {
+		serviceStopped = false
 		errs = append(errs, fmt.Errorf("stop runner service: %w", err))
+	}
+	if serviceStopped {
+		if _, err := r.runtime.ExecCommand(ctx, name, []string{"bash", "-c", "cd " + runnerInstallDir + " && ./svc.sh uninstall"}); err != nil {
+			errs = append(errs, fmt.Errorf("uninstall runner service: %w", err))
+		}
 	}
 
 	// Deregister via config.sh remove (best-effort).
