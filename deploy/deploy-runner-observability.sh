@@ -38,5 +38,6 @@ cd "${repo_root}"
 GH_RUNNER_SCALER_CONFIG_SOURCE=deploy/nodev2.config.toml ./deploy/update-server.sh
 
 systemctl is-active --quiet gh-runner-scaler.service
+./deploy/wait-for-http-ready.sh --timeout 30 http://127.0.0.1:9876/statusz
 curl --fail --silent --show-error --max-time 5 http://127.0.0.1:9876/statusz
 printf '\nDeployment complete. Trigger one disposable Actions job and inspect runner logs and issue-events in Grafana.\n'
