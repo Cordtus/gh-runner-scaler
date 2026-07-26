@@ -1,0 +1,12 @@
+[Unit]
+Description=Check daily for a new GitHub Actions runner distribution
+
+[Timer]
+OnBootSec=10m
+OnUnitActiveSec=24h
+RandomizedDelaySec=30m
+Persistent=true
+Unit=gh-runner-distribution-refresh.service
+
+[Install]
+WantedBy=timers.target

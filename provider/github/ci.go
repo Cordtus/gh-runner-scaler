@@ -139,6 +139,52 @@ func (p *Provider) ListRunners(ctx context.Context) ([]domain.Runner, error) {
 	return runners, err
 }
 
+// ListQueuedJobs performs a bounded audit of recent active workflow runs.
+func (p *Provider) ListQueuedJobs(ctx context.Context) ([]domain.QueuedJob, error) {
+	repos, err := p.listWorkflowRepos(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing repositories for queue audit: %w", err)
+	}
+	repos = p.workflowRepoBatch(repos)
+
+	var queued []domain.QueuedJob
+	for _, repo := range repos {
+		runs, _, err := p.client.Actions.ListRepositoryWorkflowRuns(ctx, p.org, repo, &gh.ListWorkflowRunsOptions{
+			ListOptions: gh.ListOptions{PerPage: 20},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("listing active workflow runs for %s: %w", repo, err)
+		}
+		for _, run := range runs.WorkflowRuns {
+			if run.GetStatus() != "queued" && run.GetStatus() != "in_progress" {
+				continue
+			}
+			jobs, _, err := p.client.Actions.ListWorkflowJobs(ctx, p.org, repo, run.GetID(), &gh.ListWorkflowJobsOptions{
+				ListOptions: gh.ListOptions{PerPage: 100},
+			})
+			if err != nil {
+				return nil, fmt.Errorf("listing workflow jobs for %s run %d: %w", repo, run.GetID(), err)
+			}
+			for _, job := range jobs.Jobs {
+				if job.GetStatus() != "queued" {
+					continue
+				}
+				queuedAt := time.Now().UTC()
+				if created := job.GetCreatedAt(); !created.IsZero() {
+					queuedAt = created.Time
+				}
+				queued = append(queued, domain.QueuedJob{
+					ID:       job.GetID(),
+					Repo:     p.org + "/" + repo,
+					Labels:   append([]string(nil), job.Labels...),
+					QueuedAt: queuedAt,
+				})
+			}
+		}
+	}
+	return queued, nil
+}
+
 // ListRunnersForMetrics returns runner inventory with bounded stale fallback for dashboards.
 func (p *Provider) ListRunnersForMetrics(ctx context.Context) ([]domain.Runner, domain.RunnerInventoryMeta, error) {
 	return p.listRunners(ctx, true)

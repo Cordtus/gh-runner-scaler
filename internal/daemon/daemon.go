@@ -9,9 +9,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/Cordtus/gh-runner-scaler/internal/demand"
 	"github.com/Cordtus/gh-runner-scaler/internal/domain"
 	"github.com/Cordtus/gh-runner-scaler/internal/engine"
 	"github.com/Cordtus/gh-runner-scaler/internal/iface"
@@ -19,33 +23,37 @@ import (
 
 // Config holds daemon-level settings.
 type Config struct {
-	Prefix           string
-	PollInterval     time.Duration
-	WebhookEnabled   bool
-	WebhookPort      int
-	WebhookDebounce  time.Duration
-	LogsToken        string
-	MetricsEnabled   bool
-	MetricsInterval  time.Duration
-	CollectWorkflows bool
-	CollectHost      bool
-	CachePool        string            // for host metrics
-	StateDir         string            // persisted daemon state (workflow metrics dedupe)
-	SyncRepos        map[string]string // repo -> cache path
+	Prefix                  string
+	PollInterval            time.Duration
+	QueueAuditInterval      time.Duration
+	WebhookEnabled          bool
+	WebhookPort             int
+	WebhookDebounce         time.Duration
+	LogsToken               string
+	MetricsEnabled          bool
+	MetricsInterval         time.Duration
+	CollectWorkflows        bool
+	CollectHost             bool
+	CachePool               string // for host metrics
+	StateDir                string // persisted daemon state (workflow metrics dedupe)
+	DemandTTL               time.Duration
+	DistributionVersionFile string
+	SyncRepos               map[string]string // repo -> cache path
 }
 
 // RunnerGroup is one logical runner class managed by the daemon.
 type RunnerGroup struct {
-	ID          string
-	Target      string
-	RepoScoped  bool
-	Prefix      string
-	MatchLabels []string
-	CachePool   string
-	Reconciler  *engine.Reconciler
-	CI          iface.CIProvider
-	Runtime     iface.ContainerRuntime
-	Metrics     iface.MetricsBackend
+	ID           string
+	Target       string
+	RepoScoped   bool
+	Prefix       string
+	MatchLabels  []string
+	BaselineName string
+	CachePool    string
+	Reconciler   *engine.Reconciler
+	CI           iface.CIProvider
+	Runtime      iface.ContainerRuntime
+	Metrics      iface.MetricsBackend
 }
 
 // Daemon runs all subsystems as goroutines in a single process.
@@ -58,6 +66,7 @@ type Daemon struct {
 	groups     []RunnerGroup
 	logStore   *LogStore
 	log        *slog.Logger
+	demand     *demand.Tracker
 
 	triggerCh chan string
 	debouncer *debouncer
@@ -172,6 +181,14 @@ func NewWithRunnerGroups(
 		issueDelivered:    make(map[string]struct{}),
 		lifecycleCtx:      context.Background(),
 	}
+	if cfg.StateDir != "" && cfg.DemandTTL > 0 {
+		tracker, err := demand.NewTracker(filepath.Join(cfg.StateDir, "demand.json"), cfg.DemandTTL, time.Now)
+		if err != nil {
+			log.Error("failed to load persisted demand", "error", err)
+		} else {
+			d.demand = tracker
+		}
+	}
 	d.loadWorkflowMetricCache()
 	d.loadIssueEventCache()
 	return d
@@ -210,6 +227,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 		}()
 	}
 
+	if d.demand != nil && d.cfg.QueueAuditInterval > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			d.queueAuditLoop(ctx)
+		}()
+	}
+
 	d.log.Info("daemon started",
 		"poll_interval", d.cfg.PollInterval,
 		"webhook", d.cfg.WebhookEnabled,
@@ -220,6 +245,47 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.log.Info("shutting down")
 	wg.Wait()
 	return nil
+}
+
+func (d *Daemon) queueAuditLoop(ctx context.Context) {
+	ticker := time.NewTicker(d.cfg.QueueAuditInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			d.auditQueuedJobs(ctx)
+		}
+	}
+}
+
+func (d *Daemon) auditQueuedJobs(ctx context.Context) {
+	for _, group := range d.groups {
+		auditor, ok := group.CI.(iface.QueuedJobAuditor)
+		if !ok {
+			continue
+		}
+		jobs, err := auditor.ListQueuedJobs(ctx)
+		if err != nil {
+			d.log.Warn("queued job audit failed", "runner_group", group.ID, "error", err)
+			continue
+		}
+		matched := jobs[:0]
+		for _, job := range jobs {
+			if groupMatchesRepo(group, job.Repo) && labelsMatch(job.Labels, group.MatchLabels) {
+				matched = append(matched, job)
+			}
+		}
+		for _, job := range matched {
+			if err := d.demand.Queue(group.ID, job); err != nil {
+				d.log.Error("failed to persist queued job audit", "runner_group", group.ID, "job_id", job.ID, "error", err)
+			}
+		}
+		if len(matched) > 0 {
+			d.TriggerGroup(group.ID)
+		}
+	}
 }
 
 // Trigger requests an immediate reconcile (called by webhook handler).
@@ -352,7 +418,13 @@ func (d *Daemon) reconcileTargets(ctx context.Context, requested []string) error
 		}
 		log := d.log.With("runner_group", group.ID)
 		log.Debug("reconcile group started")
-		if err := group.Reconciler.Reconcile(ctx); err != nil {
+		var err error
+		if d.demand == nil {
+			err = group.Reconciler.Reconcile(ctx)
+		} else {
+			err = group.Reconciler.ReconcileDemand(ctx, d.demand.Snapshot(group.ID))
+		}
+		if err != nil {
 			log.Error("reconcile group failed", "error", err)
 			errs = append(errs, fmt.Errorf("%s: %w", group.ID, err))
 		}
@@ -546,6 +618,22 @@ func (d *Daemon) collectRunnerAndHostMetrics(ctx context.Context) {
 		if err == nil {
 			rm := buildRunnerMetrics(runners, autoContainers, group.CI)
 			rm.GroupID = group.ID
+			rm.OverflowRunners = rm.AutoRunners
+			rm.BaselineConfigured = group.BaselineName != ""
+			for _, runner := range runners {
+				if runner.Name == group.BaselineName && runner.Status == "online" {
+					rm.BaselineOnline = true
+					break
+				}
+			}
+			if d.demand != nil {
+				snapshot := d.demand.Snapshot(group.ID)
+				rm.QueuedJobs = snapshot.QueuedJobs
+				rm.OldestQueuedS = int(snapshot.OldestAge.Seconds())
+			}
+			if data, readErr := os.ReadFile(d.cfg.DistributionVersionFile); readErr == nil {
+				rm.RunnerDistribution = strings.TrimSpace(string(data))
+			}
 			rm.RunnerInventoryStale = runnerInventory.Stale
 			rm.RunnerInventoryAgeS = runnerInventory.AgeS
 			rm.RunnerInventoryAt = runnerInventory.FetchedAt

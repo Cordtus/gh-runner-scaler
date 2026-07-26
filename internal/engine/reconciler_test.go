@@ -270,6 +270,47 @@ func newTestReconciler(runtime *mockRuntime, ci *mockCI, state *mockState, cache
 	)
 }
 
+func TestReconcileDemand_DoesNotCreateOverflowWithoutQueuedWork(t *testing.T) {
+	runtime := newMockRuntime()
+	ci := &mockCI{regToken: "test-token", prefix: "auto"}
+	r := newTestReconciler(runtime, ci, newMockState(), nil)
+
+	if err := r.ReconcileDemand(context.Background(), domain.CapacityDemand{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.containers) != 0 {
+		t.Fatalf("containers = %#v, want no overflow without queued work", runtime.containers)
+	}
+}
+
+func TestReconcileDemand_CreatesOnlyRequiredOverflow(t *testing.T) {
+	runtime := newMockRuntime()
+	ci := &mockCI{regToken: "test-token", prefix: "auto"}
+	r := newTestReconciler(runtime, ci, newMockState(), nil)
+
+	if err := r.ReconcileDemand(context.Background(), domain.CapacityDemand{QueuedJobs: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.containers) != 2 {
+		t.Fatalf("container count = %d, want two overflow runners", len(runtime.containers))
+	}
+}
+
+func TestReconcileDemand_MaintainsBaselineWithoutCreatingOverflow(t *testing.T) {
+	runtime := newMockRuntime()
+	ci := &mockCI{regToken: "test-token", prefix: "auto"}
+	r := newTestReconciler(runtime, ci, newMockState(), nil)
+	r.cfg.Baseline = true
+	r.cfg.BaselineName = "primary"
+
+	if err := r.ReconcileDemand(context.Background(), domain.CapacityDemand{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.containers) != 1 || runtime.containers["primary"] != domain.StatusRunning {
+		t.Fatalf("containers = %#v, want one running baseline", runtime.containers)
+	}
+}
+
 func TestScaleUp_WhenAllBusy(t *testing.T) {
 	runtime := newMockRuntime()
 	ci := &mockCI{

@@ -4,7 +4,7 @@
 [scaler]
 prefix = "gh-runner-auto"
 max_auto_runners = 6
-idle_timeout = "300s"
+idle_timeout = "600s"
 poll_interval = "30s"
 queue_audit_interval = "5m"
 demand_ttl = "30m"
@@ -153,7 +153,7 @@ retain_versions = 2
 # labels = "self-hosted,linux,x64,runner-class-typescript"
 # match_labels = ["self-hosted", "linux", "x64", "runner-class-typescript"]
 # max_auto_runners = 8
-# idle_timeout = "300s"
+# idle_timeout = "600s"
 # runner_work_dir = "_work"
 # template = "gh-runner-template-typescript"
 # cache_profile = "node"
@@ -165,7 +165,7 @@ retain_versions = 2
 # labels = "self-hosted,linux,x64,runner-class-rust"
 # match_labels = ["self-hosted", "linux", "x64", "runner-class-rust"]
 # max_auto_runners = 6
-# idle_timeout = "300s"
+# idle_timeout = "600s"
 # runner_work_dir = "_work"
 # template = "gh-runner-template-rust"
 # cache_profile = "rust"

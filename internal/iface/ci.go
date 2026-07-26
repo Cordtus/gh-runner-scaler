@@ -49,3 +49,9 @@ type CIProvider interface {
 type RunnerInventoryMetricsProvider interface {
 	ListRunnersForMetrics(ctx context.Context) ([]domain.Runner, domain.RunnerInventoryMeta, error)
 }
+
+// QueuedJobAuditor is an optional recovery path for missed workflow_job
+// webhooks. Implementations should return a bounded current snapshot.
+type QueuedJobAuditor interface {
+	ListQueuedJobs(ctx context.Context) ([]domain.QueuedJob, error)
+}

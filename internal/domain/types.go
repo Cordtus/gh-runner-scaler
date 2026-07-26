@@ -67,9 +67,24 @@ type WebhookEventType int
 const (
 	EventUnknown WebhookEventType = iota
 	EventJobQueued
+	EventJobInProgress
 	EventJobCompleted
 	EventPush
 )
+
+// QueuedJob is a provider-agnostic unit of pending runner demand.
+type QueuedJob struct {
+	ID       int64     `json:"id"`
+	Repo     string    `json:"repo"`
+	Labels   []string  `json:"labels,omitempty"`
+	QueuedAt time.Time `json:"queued_at"`
+}
+
+// CapacityDemand summarizes active queued work for a runner class.
+type CapacityDemand struct {
+	QueuedJobs int
+	OldestAge  time.Duration
+}
 
 // WebhookEvent is a provider-agnostic representation of a webhook payload.
 type WebhookEvent struct {
@@ -114,6 +129,12 @@ type RunnerMetrics struct {
 	AutoRunners            int            `json:"auto_runners"`
 	PermanentRunners       int            `json:"permanent_runners"`
 	ProvisioningRunners    int            `json:"provisioning_runners"`
+	QueuedJobs             int            `json:"queued_jobs"`
+	OldestQueuedS          int            `json:"oldest_queued_s"`
+	BaselineConfigured     bool           `json:"baseline_configured"`
+	BaselineOnline         bool           `json:"baseline_online"`
+	OverflowRunners        int            `json:"overflow_runners"`
+	RunnerDistribution     string         `json:"runner_distribution_version,omitempty"`
 	UtilizationPct         float64        `json:"utilization_pct"`
 	RunnerInventoryStale   bool           `json:"runner_inventory_stale,omitempty"`
 	RunnerInventoryAgeS    int            `json:"runner_inventory_age_s,omitempty"`

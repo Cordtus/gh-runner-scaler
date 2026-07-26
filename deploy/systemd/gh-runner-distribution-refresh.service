@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh the verified GitHub Actions runner distribution
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/gh-runner-scaler/env
+ExecStart=/usr/local/libexec/gh-runner-scaler/refresh-runner-template.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

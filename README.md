@@ -1,6 +1,6 @@
 # gh-runner-scaler
 
-Auto-scaler for GitHub Actions self-hosted runners on LXC containers. It keeps a configurable pool of runners, clones stopped LXD template containers when more capacity is needed, and tears managed runners down after job completion or an idle timeout.
+Demand-driven auto-scaler for GitHub Actions self-hosted runners on LXC containers. It maintains an optional persistent baseline, creates ephemeral overflow only for persisted queued jobs, and tears overflow down after job completion or a safety timeout.
 
 ## Deploy Your Own Instance
 
@@ -866,7 +866,9 @@ settings, and workload profiles.
 
 **ZFS cloning**: The template lives on a ZFS pool. Same-pool clones are metadata-only (~0.4s) vs cross-pool copies (~14s). Template and runners must share a pool. NVMe pools suit the persistent cache volume where sequential write throughput matters more.
 
-**Idle timeout**: `idle_timeout = "300s"` balances warm-runner availability for bursty workloads against resource consumption.
+**Demand and idle timeout**: `workflow_job` webhooks persist class-matched queued demand before triggering reconcile. `in_progress` and `completed` clear it; a five-minute bounded API audit recovers missed webhooks. `idle_timeout = "600s"` is a safety limit for overflow that never receives work, not a warm-pool replacement interval.
+
+**Runner distribution**: new runners register with `--disableupdate`. The daily `gh-runner-distribution-refresh.timer` downloads a changed `actions/runner` archive once, requires GitHub's SHA-256 asset digest, installs it into the stopped template through an atomic `current` symlink, and retains two verified versions. See `docs/runner-orchestration-runbook.md`.
 
 **Concurrency**: All three subsystems run as goroutines in one process. A channel-based trigger with `time.AfterFunc` debounce replaces the bash flock + systemd timer approach. The daemon still allows only one reconcile at a time, but webhook-triggered demand is tracked while that reconcile runs so another pass starts immediately afterward instead of waiting for the next poll tick.
 

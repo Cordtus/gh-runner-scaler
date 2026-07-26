@@ -1256,6 +1256,69 @@
       ],
       "title": "Managed Runner Containers",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "Runners / jobs",
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "lineWidth": 2,
+            "showPoints": "auto",
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 43
+      },
+      "id": 47,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "last_over_time({job=\"gh-runner-scaler\", service=\"runner-metrics\"} | json queued_jobs | unwrap queued_jobs | __error__=\"\" [2m])",
+          "legendFormat": "{{runner_group}} queued",
+          "refId": "A"
+        },
+        {
+          "expr": "last_over_time({job=\"gh-runner-scaler\", service=\"runner-metrics\"} | json overflow_runners | unwrap overflow_runners | __error__=\"\" [2m])",
+          "legendFormat": "{{runner_group}} overflow",
+          "refId": "B"
+        },
+        {
+          "expr": "last_over_time({job=\"gh-runner-scaler\", service=\"runner-metrics\"} | json baseline_online | label_format baseline_online_num=`{{ if eq .baseline_online \"true\" }}1{{ else }}0{{ end }}` | unwrap baseline_online_num | __error__=\"\" [2m])",
+          "legendFormat": "{{runner_group}} baseline online",
+          "refId": "C"
+        }
+      ],
+      "title": "Demand, Baseline, and Overflow",
+      "type": "timeseries"
     }
   ],
   "refresh": "1m",

@@ -168,9 +168,25 @@ func (d *Daemon) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	d.logWebhookEvent(event)
 
 	switch event.Type {
-	case domain.EventJobQueued, domain.EventJobCompleted:
+	case domain.EventJobQueued, domain.EventJobInProgress, domain.EventJobCompleted:
 		for _, group := range d.groupsForEvent(event) {
 			groupID := group.ID
+			if d.demand != nil {
+				var demandErr error
+				if event.Type == domain.EventJobQueued {
+					demandErr = d.demand.Queue(groupID, domain.QueuedJob{
+						ID:       event.JobID,
+						Repo:     event.Repo,
+						Labels:   append([]string(nil), event.Labels...),
+						QueuedAt: time.Now().UTC(),
+					})
+				} else {
+					demandErr = d.demand.Clear(groupID, event.JobID)
+				}
+				if demandErr != nil {
+					d.log.Error("failed to persist workflow demand", "runner_group", groupID, "job_id", event.JobID, "error", demandErr)
+				}
+			}
 			d.debouncer.schedule(d.currentLifecycleContext(), "scaler-"+groupID, d.cfg.WebhookDebounce, func() {
 				d.TriggerGroup(groupID)
 			})

@@ -235,7 +235,7 @@ func defaults() *Config {
 		Scaler: ScalerConfig{
 			Prefix:             "gh-runner-auto",
 			MaxAutoRunners:     6,
-			IdleTimeout:        Duration{300 * time.Second},
+			IdleTimeout:        Duration{10 * time.Minute},
 			PollInterval:       Duration{30 * time.Second},
 			QueueAuditInterval: Duration{5 * time.Minute},
 			DemandTTL:          Duration{30 * time.Minute},

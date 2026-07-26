@@ -16,10 +16,13 @@ import (
 )
 
 const runnerAvailabilityGrace = 2 * time.Minute
+const runnerInstallDir = "/home/runner/actions-runner/current"
 
 // ReconcilerConfig holds the tuning parameters for the reconciler.
 type ReconcilerConfig struct {
 	Prefix         string
+	Baseline       bool
+	BaselineName   string
 	MaxAutoRunners int
 	IdleTimeout    time.Duration
 	Labels         string
@@ -76,10 +79,26 @@ func NewReconciler(
 // Reconcile performs a single scale-up/scale-down pass.
 // This is the direct port of the bash scaler's main() function.
 func (r *Reconciler) Reconcile(ctx context.Context) error {
+	return r.ReconcileDemand(ctx, domain.CapacityDemand{QueuedJobs: 1})
+}
+
+// ReconcileDemand maintains the runner class and provisions overflow only for
+// persisted queued work. A zero demand snapshot never creates overflow.
+func (r *Reconciler) ReconcileDemand(ctx context.Context, demand domain.CapacityDemand) error {
 	// 1. Query runners from CI provider.
 	runners, err := r.ci.ListRunners(ctx)
 	if err != nil {
 		return fmt.Errorf("listing runners: %w", err)
+	}
+
+	baselinePending := 0
+	if r.cfg.Baseline {
+		pending, ensureErr := r.ensureBaseline(ctx, runners)
+		if ensureErr != nil {
+			r.log.Error("baseline maintenance failed", "event_type", "baseline", "action", "failed", "error", ensureErr)
+		} else {
+			baselinePending = pending
+		}
 	}
 
 	// 2. Build snapshot.
@@ -165,12 +184,19 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 		}
 	}
 
-	// 5. Scale up: no online idle runners are available and we're under the cap.
-	if availableOnline == 0 && pendingCapacity == 0 && autoCount < r.cfg.MaxAutoRunners {
-		r.log.Info("no available runners, scaling up", "event_type", "scale_up", "action", "requested")
-		if err := r.scaleUp(ctx, filterRemovedContainers(containers, removed)); err != nil {
+	// 5. Scale up only when persisted queued demand exceeds idle and
+	// provisioning capacity.
+	needed := demand.QueuedJobs - availableOnline - pendingCapacity - baselinePending
+	for needed > 0 && autoCount < r.cfg.MaxAutoRunners {
+		r.log.Info("queued demand requires overflow", "event_type", "scale_up", "action", "requested", "queued_jobs", demand.QueuedJobs, "needed", needed)
+		name, err := r.scaleUp(ctx, filterRemovedContainers(containers, removed))
+		if err != nil {
 			r.log.Error("scale-up failed", "event_type", "scale_up", "action", "failed", "error", err)
+			break
 		}
+		containers = append(containers, domain.Container{Name: name, Status: domain.StatusRunning})
+		autoCount++
+		needed--
 	}
 
 	return nil
@@ -179,20 +205,26 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 // scaleUp provisions a new ephemeral runner container.
 // Preserves the full bash scaler sequence: clone -> cache attach -> start ->
 // wait ready -> symlinks -> config.sh --ephemeral -> svc.sh install+start -> track state.
-func (r *Reconciler) scaleUp(ctx context.Context, existing []domain.Container) error {
+func (r *Reconciler) scaleUp(ctx context.Context, existing []domain.Container) (string, error) {
 	r.suspendRunnerInventoryCache()
 	token, err := r.ci.GetRegistrationToken(ctx)
 	if err != nil {
 		r.resumeRunnerInventoryCache()
-		return fmt.Errorf("getting registration token: %w", err)
+		return "", fmt.Errorf("getting registration token: %w", err)
 	}
 	defer r.resumeRunnerInventoryCache()
 
 	name, err := r.cloneWithFreshName(ctx, existing)
 	if err != nil {
-		return err
+		return "", err
 	}
+	if err := r.configureClonedRunner(ctx, name, token, true); err != nil {
+		return "", err
+	}
+	return name, nil
+}
 
+func (r *Reconciler) configureClonedRunner(ctx context.Context, name, token string, ephemeral bool) error {
 	r.log.Info("scaling up", "event_type", "scale_up", "action", "started", "container", name, "runner", name)
 
 	// Attach cache volume (optional).
@@ -211,7 +243,7 @@ func (r *Reconciler) scaleUp(ctx context.Context, existing []domain.Container) e
 	// Wait for boot.
 	readyCheck := r.cfg.ReadyCheck
 	if len(readyCheck) == 0 {
-		readyCheck = []string{"test", "-f", "/home/runner/config.sh"}
+		readyCheck = []string{"test", "-x", runnerInstallDir + "/config.sh"}
 	}
 	timeout := r.cfg.ReadyTimeout
 	if timeout == 0 {
@@ -230,12 +262,15 @@ func (r *Reconciler) scaleUp(ctx context.Context, existing []domain.Container) e
 		}
 	}
 
-	// Configure runner as ephemeral.
+	lifecycleFlag := ""
+	if ephemeral {
+		lifecycleFlag = " --ephemeral"
+	}
 	configCmd := []string{
 		"su", "-", "runner", "-c",
 		fmt.Sprintf(
-			"./config.sh --url %s --token '%s' --name '%s' --labels '%s' --work %s --unattended --ephemeral --replace",
-			r.ci.RegistrationURL(), token, name, r.cfg.Labels, r.cfg.RunnerWorkDir,
+			"cd %s && ./config.sh --url %s --token '%s' --name '%s' --labels '%s' --work %s --unattended%s --disableupdate --replace",
+			runnerInstallDir, r.ci.RegistrationURL(), token, name, r.cfg.Labels, r.cfg.RunnerWorkDir, lifecycleFlag,
 		),
 	}
 	if _, err := r.runtime.ExecCommand(ctx, name, configCmd); err != nil {
@@ -248,7 +283,7 @@ func (r *Reconciler) scaleUp(ctx context.Context, existing []domain.Container) e
 	}
 
 	// Install and start the runner service.
-	svcCmd := []string{"bash", "-c", "cd /home/runner && ./svc.sh install runner && ./svc.sh start"}
+	svcCmd := []string{"bash", "-c", "cd " + runnerInstallDir + " && ./svc.sh install runner && ./svc.sh start"}
 	if _, err := r.runtime.ExecCommand(ctx, name, svcCmd); err != nil {
 		return r.scaleUpFailure(name, "runner service start failed", err, r.cleanupFailedScaleUp(ctx, name, true))
 	}
@@ -260,6 +295,46 @@ func (r *Reconciler) scaleUp(ctx context.Context, existing []domain.Container) e
 
 	r.log.Info("scaled up", "event_type", "scale_up", "action", "completed", "container", name, "runner", name)
 	return nil
+}
+
+func (r *Reconciler) ensureBaseline(ctx context.Context, runners []domain.Runner) (int, error) {
+	if strings.TrimSpace(r.cfg.BaselineName) == "" {
+		return 0, errors.New("baseline name is required")
+	}
+	for _, runner := range runners {
+		if runner.Name != r.cfg.BaselineName {
+			continue
+		}
+		if runner.Status == "online" {
+			return 0, nil
+		}
+	}
+
+	containers, err := r.runtime.ListContainers(ctx, r.cfg.BaselineName)
+	if err != nil {
+		return 0, fmt.Errorf("listing baseline container: %w", err)
+	}
+	for _, container := range containers {
+		if container.Name == r.cfg.BaselineName && container.Status == domain.StatusRunning {
+			return 1, nil
+		}
+	}
+
+	r.suspendRunnerInventoryCache()
+	token, err := r.ci.GetRegistrationToken(ctx)
+	if err != nil {
+		r.resumeRunnerInventoryCache()
+		return 0, fmt.Errorf("getting baseline registration token: %w", err)
+	}
+	defer r.resumeRunnerInventoryCache()
+	if err := r.runtime.CloneFromTemplate(ctx, r.cfg.BaselineName); err != nil {
+		return 0, fmt.Errorf("cloning baseline template: %w", err)
+	}
+	if err := r.configureClonedRunner(ctx, r.cfg.BaselineName, token, false); err != nil {
+		return 0, err
+	}
+	r.log.Info("baseline ready", "event_type", "baseline", "action", "completed", "container", r.cfg.BaselineName)
+	return 1, nil
 }
 
 func (r *Reconciler) cloneWithFreshName(ctx context.Context, existing []domain.Container) (string, error) {
@@ -298,7 +373,7 @@ func (r *Reconciler) scaleDown(ctx context.Context, name string, runners []domai
 	result := scaleDownResult{}
 
 	// Stop runner service (best-effort).
-	if _, err := r.runtime.ExecCommand(ctx, name, []string{"bash", "-c", "cd /home/runner && ./svc.sh stop"}); err != nil {
+	if _, err := r.runtime.ExecCommand(ctx, name, []string{"bash", "-c", "cd " + runnerInstallDir + " && ./svc.sh stop"}); err != nil {
 		errs = append(errs, fmt.Errorf("stop runner service: %w", err))
 	}
 
@@ -307,7 +382,7 @@ func (r *Reconciler) scaleDown(ctx context.Context, name string, runners []domai
 	if err != nil {
 		errs = append(errs, fmt.Errorf("get remove token: %w", err))
 	} else if removeToken != "" {
-		cmd := []string{"su", "-", "runner", "-c", fmt.Sprintf("./config.sh remove --token '%s'", removeToken)}
+		cmd := []string{"su", "-", "runner", "-c", fmt.Sprintf("cd %s && ./config.sh remove --token '%s'", runnerInstallDir, removeToken)}
 		if _, err := r.runtime.ExecCommand(ctx, name, cmd); err != nil {
 			errs = append(errs, fmt.Errorf("runner config remove: %w", err))
 		}

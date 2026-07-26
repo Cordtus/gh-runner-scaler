@@ -62,6 +62,17 @@ Live acceptance requires a disposable runner lifecycle: one current job's diagno
 
 ## Out of scope
 
+## Integrated orchestration work
+
+The related demand-driven orchestration plan is adopted for the remaining root causes that observability alone cannot remove:
+
+- Replace the zero-idle replacement branch with persisted `workflow_job.queued` demand. A 30-second poll performs maintenance only; it never treats zero idle runners as demand.
+- Keep exactly one non-ephemeral Poolbet Node/Docker baseline (`gh-runner-primary`) and create class-matched ephemeral overflow only when queued demand exceeds idle and provisioning capacity. Specialised classes begin at zero.
+- Add a five-minute missed-webhook queue audit and a 30-minute demand TTL.
+- Replace runner self-update with a repository-owned daily distribution refresh: download `actions/runner` Linux x64 at most once per day, verify GitHub's SHA-256 digest, retain two versions, atomically update the stopped template, and register all runner types with `--disableupdate`.
+- Keep runner observability independent of all of the above: it must neither create capacity nor delay runner availability, and its internal endpoint remains credential-free.
+
+## Out of scope
+
 - Changing Grafana/Loki retention policy.
-- Rewriting existing runner lifecycle metrics or dashboard queries.
 - Retaining an external Grafana Cloud credential inside ephemeral runner containers.

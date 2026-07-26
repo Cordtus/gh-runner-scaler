@@ -89,7 +89,7 @@ func parseWorkflowJob(payload []byte) (*domain.WebhookEvent, error) {
 	case "completed":
 		evType = domain.EventJobCompleted
 	case "in_progress":
-		evType = domain.EventUnknown
+		evType = domain.EventJobInProgress
 	default:
 		return nil, nil // other actions are ignored
 	}

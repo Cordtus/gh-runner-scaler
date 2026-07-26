@@ -15,6 +15,7 @@ import (
 
 	"github.com/Cordtus/gh-runner-scaler/internal/config"
 	"github.com/Cordtus/gh-runner-scaler/internal/daemon"
+	"github.com/Cordtus/gh-runner-scaler/internal/domain"
 	"github.com/Cordtus/gh-runner-scaler/internal/engine"
 	"github.com/Cordtus/gh-runner-scaler/internal/iface"
 	"github.com/Cordtus/gh-runner-scaler/internal/runnerobs"
@@ -119,7 +120,7 @@ func runReconcile(args []string) {
 
 	ctx := context.Background()
 	for _, group := range groups {
-		if err := group.Reconciler.Reconcile(ctx); err != nil {
+		if err := group.Reconciler.ReconcileDemand(ctx, domain.CapacityDemand{}); err != nil {
 			log.Error("reconcile failed", "runner_group", group.ID, "error", err)
 			os.Exit(1)
 		}
@@ -128,19 +129,22 @@ func runReconcile(args []string) {
 
 func daemonConfigFrom(cfg *config.Config) daemon.Config {
 	return daemon.Config{
-		Prefix:           cfg.Scaler.Prefix,
-		PollInterval:     cfg.Scaler.PollInterval.Duration,
-		WebhookEnabled:   cfg.Webhook.Enabled,
-		WebhookPort:      cfg.Webhook.Port,
-		WebhookDebounce:  cfg.Webhook.Debounce.Duration,
-		LogsToken:        cfg.Webhook.LogsToken,
-		MetricsEnabled:   cfg.Metrics.Enabled,
-		MetricsInterval:  cfg.Metrics.Interval.Duration,
-		CollectWorkflows: cfg.Metrics.CollectWorkflows,
-		CollectHost:      cfg.Metrics.CollectHost,
-		CachePool:        cfg.Cache.Pool,
-		StateDir:         cfg.State.Filesystem.Dir,
-		SyncRepos:        cfg.Webhook.SyncRepos,
+		Prefix:                  cfg.Scaler.Prefix,
+		PollInterval:            cfg.Scaler.PollInterval.Duration,
+		QueueAuditInterval:      cfg.Scaler.QueueAuditInterval.Duration,
+		WebhookEnabled:          cfg.Webhook.Enabled,
+		WebhookPort:             cfg.Webhook.Port,
+		WebhookDebounce:         cfg.Webhook.Debounce.Duration,
+		LogsToken:               cfg.Webhook.LogsToken,
+		MetricsEnabled:          cfg.Metrics.Enabled,
+		MetricsInterval:         cfg.Metrics.Interval.Duration,
+		CollectWorkflows:        cfg.Metrics.CollectWorkflows,
+		CollectHost:             cfg.Metrics.CollectHost,
+		CachePool:               cfg.Cache.Pool,
+		StateDir:                cfg.State.Filesystem.Dir,
+		DemandTTL:               cfg.Scaler.DemandTTL.Duration,
+		DistributionVersionFile: cfg.RunnerDistribution.VersionFile,
+		SyncRepos:               cfg.Webhook.SyncRepos,
 	}
 }
 
@@ -181,6 +185,8 @@ func wireRunnerGroups(cfg *config.Config, log *slog.Logger) ([]daemon.RunnerGrou
 		reconciler := engine.NewReconciler(
 			engine.ReconcilerConfig{
 				Prefix:         class.Prefix,
+				Baseline:       class.Baseline,
+				BaselineName:   class.BaselineName,
 				MaxAutoRunners: class.MaxAutoRunners,
 				IdleTimeout:    class.IdleTimeout,
 				Labels:         class.Labels,
@@ -193,16 +199,17 @@ func wireRunnerGroups(cfg *config.Config, log *slog.Logger) ([]daemon.RunnerGrou
 		)
 
 		groups = append(groups, daemon.RunnerGroup{
-			ID:          class.ID,
-			Target:      class.TargetName(),
-			RepoScoped:  class.RepoScoped(),
-			Prefix:      class.Prefix,
-			MatchLabels: class.MatchLabels,
-			CachePool:   class.Cache.Pool,
-			Reconciler:  reconciler,
-			CI:          ci,
-			Runtime:     runtime,
-			Metrics:     classMetrics,
+			ID:           class.ID,
+			Target:       class.TargetName(),
+			RepoScoped:   class.RepoScoped(),
+			Prefix:       class.Prefix,
+			MatchLabels:  class.MatchLabels,
+			BaselineName: class.BaselineName,
+			CachePool:    class.Cache.Pool,
+			Reconciler:   reconciler,
+			CI:           ci,
+			Runtime:      runtime,
+			Metrics:      classMetrics,
 		})
 	}
 

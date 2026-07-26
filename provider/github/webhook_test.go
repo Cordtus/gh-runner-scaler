@@ -117,8 +117,8 @@ func TestParseWorkflowJob_InProgressActionRemainsObservable(t *testing.T) {
 	if event == nil {
 		t.Fatal("expected in_progress workflow_job event")
 	}
-	if event.Type != domain.EventUnknown {
-		t.Fatalf("expected in_progress to map to EventUnknown, got %v", event.Type)
+	if event.Type != domain.EventJobInProgress {
+		t.Fatalf("in_progress event type = %v, want EventJobInProgress", event.Type)
 	}
 }
 
