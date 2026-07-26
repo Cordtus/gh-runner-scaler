@@ -17,6 +17,7 @@ import (
 	"github.com/Cordtus/gh-runner-scaler/internal/daemon"
 	"github.com/Cordtus/gh-runner-scaler/internal/engine"
 	"github.com/Cordtus/gh-runner-scaler/internal/iface"
+	"github.com/Cordtus/gh-runner-scaler/internal/runnerobs"
 	"github.com/Cordtus/gh-runner-scaler/provider/fsstate"
 	ghprovider "github.com/Cordtus/gh-runner-scaler/provider/github"
 	"github.com/Cordtus/gh-runner-scaler/provider/loki"
@@ -173,6 +174,10 @@ func wireRunnerGroups(cfg *config.Config, log *slog.Logger) ([]daemon.RunnerGrou
 		}
 
 		classMetrics := wireMetricsBackend(cfg, class)
+		var observability *runnerobs.Bootstrapper
+		if cfg.RunnerObservability.Enabled {
+			observability = &runnerobs.Bootstrapper{Executor: runtime, Config: runnerobs.Config{PushURL: cfg.RunnerObservability.PushURL, MaxRetries: cfg.RunnerObservability.MaxRetries}, HealthURL: cfg.RunnerObservability.HealthURL, GroupID: class.ID, Target: class.TargetName()}
+		}
 		reconciler := engine.NewReconciler(
 			engine.ReconcilerConfig{
 				Prefix:         class.Prefix,
@@ -182,6 +187,7 @@ func wireRunnerGroups(cfg *config.Config, log *slog.Logger) ([]daemon.RunnerGrou
 				RunnerWorkDir:  class.RunnerWorkDir,
 				CacheEnabled:   class.Cache.Enabled,
 				CachePrune:     config.CachePrunePolicyFor(class.Cache),
+				Observability:  observability,
 			},
 			runtime, cache, ci, state, log.With("runner_group", class.ID),
 		)

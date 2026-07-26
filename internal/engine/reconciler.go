@@ -12,6 +12,7 @@ import (
 
 	"github.com/Cordtus/gh-runner-scaler/internal/domain"
 	"github.com/Cordtus/gh-runner-scaler/internal/iface"
+	"github.com/Cordtus/gh-runner-scaler/internal/runnerobs"
 )
 
 const runnerAvailabilityGrace = 2 * time.Minute
@@ -27,6 +28,7 @@ type ReconcilerConfig struct {
 	CachePrune     domain.CachePrunePolicy
 	ReadyCheck     []string      // command to poll inside container (e.g. ["test", "-f", "/home/runner/config.sh"])
 	ReadyTimeout   time.Duration // max wait for container boot
+	Observability  *runnerobs.Bootstrapper
 }
 
 // Reconciler implements the scale-up/scale-down decision loop.
@@ -238,6 +240,11 @@ func (r *Reconciler) scaleUp(ctx context.Context, existing []domain.Container) e
 	}
 	if _, err := r.runtime.ExecCommand(ctx, name, configCmd); err != nil {
 		return r.scaleUpFailure(name, "runner config failed", err, r.cleanupFailedScaleUp(ctx, name, true))
+	}
+	if r.cfg.Observability != nil {
+		if err := r.cfg.Observability.Prepare(ctx, name); err != nil {
+			r.log.Warn("runner log delivery disabled", "event_type", "runner_log_delivery", "action", "disabled", "container", name, "runner", name, "error", err)
+		}
 	}
 
 	// Install and start the runner service.
