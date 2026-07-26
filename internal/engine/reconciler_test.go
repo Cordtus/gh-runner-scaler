@@ -20,6 +20,7 @@ type mockRuntime struct {
 	execCalls   [][]string
 	listCalls   int
 	statusCalls int
+	cloneCalls  int
 	cloneHook   func(name string) error
 	execHook    func(cmd []string) error
 	statusErr   map[string]error
@@ -39,6 +40,7 @@ func newMockRuntime() *mockRuntime {
 func (m *mockRuntime) CloneFromTemplate(_ context.Context, name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.cloneCalls++
 	if m.cloneErr != nil {
 		return m.cloneErr
 	}
@@ -308,6 +310,27 @@ func TestReconcileDemand_MaintainsBaselineWithoutCreatingOverflow(t *testing.T) 
 	}
 	if len(runtime.containers) != 1 || runtime.containers["primary"] != domain.StatusRunning {
 		t.Fatalf("containers = %#v, want one running baseline", runtime.containers)
+	}
+}
+
+func TestReconcileDemand_ReplacesBaselineThatNeverRegistered(t *testing.T) {
+	runtime := newMockRuntime()
+	runtime.containers["primary"] = domain.StatusRunning
+	ci := &mockCI{regToken: "test-token", removeToken: "remove-token", prefix: "auto"}
+	state := newMockState()
+	state.states["primary"] = time.Now().Add(-runnerAvailabilityGrace - time.Second)
+	r := newTestReconciler(runtime, ci, state, nil)
+	r.cfg.Baseline = true
+	r.cfg.BaselineName = "primary"
+
+	if err := r.ReconcileDemand(context.Background(), domain.CapacityDemand{}); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.cloneCalls != 1 {
+		t.Fatalf("baseline clone calls = %d, want one replacement", runtime.cloneCalls)
+	}
+	if runtime.containers["primary"] != domain.StatusRunning {
+		t.Fatalf("baseline status = %v, want running replacement", runtime.containers["primary"])
 	}
 }
 

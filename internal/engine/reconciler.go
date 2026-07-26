@@ -315,8 +315,28 @@ func (r *Reconciler) ensureBaseline(ctx context.Context, runners []domain.Runner
 		return 0, fmt.Errorf("listing baseline container: %w", err)
 	}
 	for _, container := range containers {
-		if container.Name == r.cfg.BaselineName && container.Status == domain.StatusRunning {
-			return 1, nil
+		if container.Name != r.cfg.BaselineName {
+			continue
+		}
+		if container.Status == domain.StatusRunning {
+			lastActive, stateErr := r.state.GetLastActive(ctx, container.Name)
+			if stateErr != nil {
+				if err := r.state.SetLastActive(ctx, container.Name, time.Now()); err != nil {
+					r.log.Warn("failed to initialize baseline state", "container", container.Name, "error", err)
+				}
+				return 1, nil
+			}
+			if time.Since(lastActive) < r.pendingAvailabilityGrace() {
+				return 1, nil
+			}
+		}
+
+		result := r.scaleDown(ctx, container.Name, runners, &reconcilePass{})
+		if result.err != nil {
+			r.log.Warn("stale baseline cleanup encountered errors", "container", container.Name, "error", result.err)
+		}
+		if !result.deleted {
+			return 0, fmt.Errorf("stale baseline %s could not be deleted", container.Name)
 		}
 	}
 
