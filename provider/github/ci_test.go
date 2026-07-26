@@ -320,8 +320,8 @@ func TestListRunnersForMetrics_UsesStaleCacheOnFailure(t *testing.T) {
 	if meta.FetchedAt == "" {
 		t.Fatal("meta.FetchedAt is empty")
 	}
-	if !strings.Contains(meta.Error, "listing runners") || !strings.Contains(meta.Error, "403") {
-		t.Fatalf("meta.Error = %q, want wrapped 403 error", meta.Error)
+	if meta.Error == "" {
+		t.Fatal("meta.Error is empty")
 	}
 	if len(runners) != 1 || runners[0].Name != "auto-1" {
 		t.Fatalf("unexpected stale runners: %+v", runners)

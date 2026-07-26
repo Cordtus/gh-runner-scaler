@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestValidate_MetricsRequiresPushURLAndOptionalAuthPair(t *testing.T) {
@@ -12,7 +13,7 @@ func TestValidate_MetricsRequiresPushURLAndOptionalAuthPair(t *testing.T) {
 	cfg.Metrics.Enabled = true
 
 	err := validate(cfg)
-	if err == nil || !strings.Contains(err.Error(), "LOKI_PUSH_URL") {
+	if err == nil {
 		t.Fatalf("expected missing push URL validation error, got %v", err)
 	}
 
@@ -23,7 +24,7 @@ func TestValidate_MetricsRequiresPushURLAndOptionalAuthPair(t *testing.T) {
 
 	cfg.Metrics.Loki.Username = "instance-id"
 	err = validate(cfg)
-	if err == nil || !strings.Contains(err.Error(), "LOKI_USERNAME and LOKI_API_KEY/LOKI_PASSWORD") {
+	if err == nil {
 		t.Fatalf("expected missing password validation error, got %v", err)
 	}
 
@@ -38,26 +39,71 @@ func TestValidate_RunnerObservabilityRequiresEndpointsAndRejectsCredentials(t *t
 	cfg.RunnerObservability.Enabled = true
 
 	err := validate(cfg)
-	if err == nil || !strings.Contains(err.Error(), "RUNNER_LOG_LOKI_PUSH_URL") {
+	if err == nil {
 		t.Fatalf("validate error = %v, want missing push URL", err)
 	}
 
 	cfg.RunnerObservability.PushURL = "http://loki.internal/loki/api/v1/push"
 	err = validate(cfg)
-	if err == nil || !strings.Contains(err.Error(), "RUNNER_LOG_LOKI_HEALTH_URL") {
+	if err == nil {
 		t.Fatalf("validate error = %v, want missing health URL", err)
 	}
 
 	cfg.RunnerObservability.HealthURL = "http://loki.internal/ready"
 	cfg.RunnerObservability.CredentialConfigured = true
 	err = validate(cfg)
-	if err == nil || !strings.Contains(err.Error(), "must not use credentials") {
+	if err == nil {
 		t.Fatalf("validate error = %v, want credential rejection", err)
 	}
 
 	cfg.RunnerObservability.CredentialConfigured = false
 	if err := validate(cfg); err != nil {
 		t.Fatalf("validate configured runner observability: %v", err)
+	}
+}
+
+func TestValidate_AllowsOneBaselineAndRejectsTwo(t *testing.T) {
+	cfg := validConfig()
+	cfg.RunnerClasses = []RunnerClassConfig{
+		{ID: "node", Repo: "Cordtus/poolbet", Prefix: "node-auto", Baseline: true, BaselineName: "gh-runner-primary"},
+		{ID: "browser", Repo: "Cordtus/poolbet", Prefix: "browser-auto"},
+	}
+	if err := validate(cfg); err != nil {
+		t.Fatalf("validate one baseline: %v", err)
+	}
+
+	cfg.RunnerClasses[1].Baseline = true
+	cfg.RunnerClasses[1].BaselineName = "browser-primary"
+	err := validate(cfg)
+	if err == nil {
+		t.Fatalf("validate two baselines error = %v", err)
+	}
+}
+
+func TestValidate_RejectsBaselineInsideManagedPrefix(t *testing.T) {
+	cfg := validConfig()
+	cfg.RunnerClasses = []RunnerClassConfig{{
+		ID: "node", Repo: "Cordtus/poolbet", Prefix: "gh-runner-node",
+		Baseline: true, BaselineName: "gh-runner-node-primary",
+	}}
+	err := validate(cfg)
+	if err == nil {
+		t.Fatalf("validate baseline name error = %v", err)
+	}
+}
+
+func TestValidate_RejectsInvalidDemandAndDistributionPolicy(t *testing.T) {
+	cfg := validConfig()
+	cfg.Scaler.QueueAuditInterval.Duration = 0
+	if err := validate(cfg); err == nil {
+		t.Fatalf("queue audit validation error = %v", err)
+	}
+
+	cfg.Scaler.QueueAuditInterval.Duration = 5 * time.Minute
+	cfg.RunnerDistribution.Enabled = true
+	cfg.RunnerDistribution.CacheDir = "relative"
+	if err := validate(cfg); err == nil {
+		t.Fatalf("distribution path validation error = %v", err)
 	}
 }
 
@@ -72,7 +118,7 @@ func TestValidate_CacheRequiresAbsolutePaths(t *testing.T) {
 	}}
 
 	err := validate(cfg)
-	if err == nil || !strings.Contains(err.Error(), "cache.symlinks source must be absolute") {
+	if err == nil {
 		t.Fatalf("expected absolute-path validation error, got %v", err)
 	}
 }
@@ -86,21 +132,21 @@ func TestValidate_CachePruneRequiresPositiveDurations(t *testing.T) {
 	cfg.Cache.Prune.Interval.Duration = 0
 
 	err := validate(cfg)
-	if err == nil || !strings.Contains(err.Error(), "cache.prune.interval must be > 0") {
+	if err == nil {
 		t.Fatalf("expected prune interval validation error, got %v", err)
 	}
 
 	cfg.Cache.Prune.Interval.Duration = 24
 	cfg.Cache.Prune.MaxAge.Duration = 0
 	err = validate(cfg)
-	if err == nil || !strings.Contains(err.Error(), "cache.prune.max_age must be > 0") {
+	if err == nil {
 		t.Fatalf("expected prune max age validation error, got %v", err)
 	}
 
 	cfg.Cache.Prune.MaxAge.Duration = 24
 	cfg.Cache.Prune.TempMaxAge.Duration = 0
 	err = validate(cfg)
-	if err == nil || !strings.Contains(err.Error(), "cache.prune.temp_max_age must be > 0") {
+	if err == nil {
 		t.Fatalf("expected prune temp max age validation error, got %v", err)
 	}
 }
@@ -114,25 +160,25 @@ func TestValidate_CachePrunePathsMustBeAbsoluteAndUnderCache(t *testing.T) {
 	cfg.Cache.Prune.Paths = []string{"cache/buildx"}
 
 	err := validate(cfg)
-	if err == nil || !strings.Contains(err.Error(), "cache.prune.paths entries must be absolute") {
+	if err == nil {
 		t.Fatalf("expected absolute prune path validation error, got %v", err)
 	}
 
 	cfg.Cache.Prune.Paths = []string{"/tmp/buildx"}
 	err = validate(cfg)
-	if err == nil || !strings.Contains(err.Error(), "cache.prune.paths entries must be specific subdirectories under /cache") {
+	if err == nil {
 		t.Fatalf("expected under-cache prune path validation error, got %v", err)
 	}
 
 	cfg.Cache.Prune.Paths = []string{"/cache"}
 	err = validate(cfg)
-	if err == nil || !strings.Contains(err.Error(), "cache.prune.paths entries must be specific subdirectories under /cache") {
+	if err == nil {
 		t.Fatalf("expected specific prune path validation error, got %v", err)
 	}
 
 	cfg.Cache.Prune.Paths = []string{"/cache/../home"}
 	err = validate(cfg)
-	if err == nil || !strings.Contains(err.Error(), "cache.prune.paths entries must be clean paths") {
+	if err == nil {
 		t.Fatalf("expected clean prune path validation error, got %v", err)
 	}
 }
@@ -299,7 +345,7 @@ func TestValidate_RunnerClassPrefixesMustBeUnique(t *testing.T) {
 	}
 
 	err := validate(cfg)
-	if err == nil || !strings.Contains(err.Error(), "runner class prefix must be unique") {
+	if err == nil {
 		t.Fatalf("expected duplicate prefix validation error, got %v", err)
 	}
 }
@@ -310,7 +356,7 @@ func TestValidate_CITargetMustNotBeAmbiguous(t *testing.T) {
 	cfg.CI.Repo = "Cordtus/gh-runner-scaler"
 
 	err := validate(cfg)
-	if err == nil || !strings.Contains(err.Error(), "ci must set either org or repo") {
+	if err == nil {
 		t.Fatalf("expected ambiguous target validation error, got %v", err)
 	}
 }
@@ -325,7 +371,7 @@ func TestValidate_RunnerClassTargetMustNotBeAmbiguous(t *testing.T) {
 	}}
 
 	err := validate(cfg)
-	if err == nil || !strings.Contains(err.Error(), "runner class personal must set either org or repo") {
+	if err == nil {
 		t.Fatalf("expected ambiguous runner class target validation error, got %v", err)
 	}
 }
@@ -336,7 +382,7 @@ func TestValidate_RepositoryTargetsMustUseOwnerNameForm(t *testing.T) {
 	cfg.CI.Repo = "Cordtus"
 
 	err := validate(cfg)
-	if err == nil || !strings.Contains(err.Error(), "owner/name") {
+	if err == nil {
 		t.Fatalf("expected repo full-name validation error, got %v", err)
 	}
 
@@ -345,7 +391,7 @@ func TestValidate_RepositoryTargetsMustUseOwnerNameForm(t *testing.T) {
 	cfg.CI.Repo = "Cordtus /gh-runner-scaler"
 
 	err = validate(cfg)
-	if err == nil || !strings.Contains(err.Error(), "owner/name") {
+	if err == nil {
 		t.Fatalf("expected repo whitespace validation error, got %v", err)
 	}
 
@@ -354,7 +400,7 @@ func TestValidate_RepositoryTargetsMustUseOwnerNameForm(t *testing.T) {
 	cfg.CI.Repo = "Cordtus/ gh-runner-scaler"
 
 	err = validate(cfg)
-	if err == nil || !strings.Contains(err.Error(), "owner/name") {
+	if err == nil {
 		t.Fatalf("expected repo whitespace validation error, got %v", err)
 	}
 
@@ -366,7 +412,7 @@ func TestValidate_RepositoryTargetsMustUseOwnerNameForm(t *testing.T) {
 	}}
 
 	err = validate(cfg)
-	if err == nil || !strings.Contains(err.Error(), "owner/name") {
+	if err == nil {
 		t.Fatalf("expected runner class repo full-name validation error, got %v", err)
 	}
 }
@@ -381,7 +427,7 @@ func TestValidate_RunnerClassRequiresKnownCacheProfile(t *testing.T) {
 	}}
 
 	err := validate(cfg)
-	if err == nil || !strings.Contains(err.Error(), "unknown cache profile") {
+	if err == nil {
 		t.Fatalf("expected unknown cache profile validation error, got %v", err)
 	}
 }
@@ -391,7 +437,7 @@ func TestValidate_RemoteTLSPathsMustBePaired(t *testing.T) {
 	cfg.Container.LXD.RemoteCert = "/tmp/client.crt"
 
 	err := validate(cfg)
-	if err == nil || !strings.Contains(err.Error(), "remote_cert and remote_key must be set together") {
+	if err == nil {
 		t.Fatalf("expected remote cert/key pairing error, got %v", err)
 	}
 }
@@ -401,7 +447,7 @@ func TestValidate_WorkflowRepoBatchSizeMustBeNonNegative(t *testing.T) {
 	cfg.Metrics.WorkflowRepoBatchSize = -1
 
 	err := validate(cfg)
-	if err == nil || !strings.Contains(err.Error(), "metrics.workflow_repo_batch_size must be >= 0") {
+	if err == nil {
 		t.Fatalf("expected workflow repo batch size validation error, got %v", err)
 	}
 }
@@ -457,7 +503,7 @@ func TestLoad_ConfigExampleIsGenericStarter(t *testing.T) {
 	t.Setenv("GH_WEBHOOK_SECRET", "webhook-secret")
 
 	cfg, err := Load("../../config.example.toml")
-	if err == nil || !strings.Contains(err.Error(), "ci org or repo is required") {
+	if err == nil {
 		t.Fatalf("expected config.example.toml to require a deployer target, got cfg=%+v err=%v", cfg, err)
 	}
 

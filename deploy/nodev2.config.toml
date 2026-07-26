@@ -6,6 +6,8 @@ prefix = "gh-runner-auto"
 max_auto_runners = 6
 idle_timeout = "300s"
 poll_interval = "30s"
+queue_audit_interval = "5m"
+demand_ttl = "30m"
 labels = "self-hosted,linux,x64,runner-class-cac"
 runner_work_dir = "_work"
 
@@ -181,6 +183,8 @@ max_auto_runners = 2
 runner_work_dir = "_work"
 template = "gh-runner-template"
 cache_profile = "node"
+baseline = true
+baseline_name = "gh-runner-primary"
 
 [[runner_classes]]
 id = "node-foundry"
@@ -213,7 +217,7 @@ debounce = "2s"
 
 [metrics]
 enabled = true
-interval = "20s"
+interval = "60s"
 collect_workflows = true
 workflow_repo_batch_size = 25
 collect_host = true
@@ -230,6 +234,15 @@ initial_backoff = "1s"
 max_backoff = "1m"
 max_source_bytes = 16777216
 max_lifecycle_bytes = 134217728
+
+[runner_distribution]
+enabled = true
+repository = "actions/runner"
+platform = "linux-x64"
+cache_dir = "/var/lib/gh-runner-scaler/runner-distributions"
+version_file = "/var/lib/gh-runner-scaler/runner-distributions/current-version"
+check_interval = "24h"
+retain_versions = 2
 
 [state]
 provider = "filesystem"

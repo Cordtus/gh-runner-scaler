@@ -25,17 +25,20 @@ type Config struct {
 	Webhook             WebhookConfig             `toml:"webhook"`
 	Metrics             MetricsConfig             `toml:"metrics"`
 	RunnerObservability RunnerObservabilityConfig `toml:"runner_observability"`
+	RunnerDistribution  RunnerDistributionConfig  `toml:"runner_distribution"`
 	State               StateConfig               `toml:"state"`
 }
 
 // ScalerConfig controls the core scaling behavior.
 type ScalerConfig struct {
-	Prefix         string   `toml:"prefix"`
-	MaxAutoRunners int      `toml:"max_auto_runners"`
-	IdleTimeout    Duration `toml:"idle_timeout"`
-	PollInterval   Duration `toml:"poll_interval"`
-	Labels         string   `toml:"labels"`
-	RunnerWorkDir  string   `toml:"runner_work_dir"`
+	Prefix             string   `toml:"prefix"`
+	MaxAutoRunners     int      `toml:"max_auto_runners"`
+	IdleTimeout        Duration `toml:"idle_timeout"`
+	PollInterval       Duration `toml:"poll_interval"`
+	QueueAuditInterval Duration `toml:"queue_audit_interval"`
+	DemandTTL          Duration `toml:"demand_ttl"`
+	Labels             string   `toml:"labels"`
+	RunnerWorkDir      string   `toml:"runner_work_dir"`
 }
 
 // RunnerClassConfig describes one logical runner class managed by the router.
@@ -54,6 +57,8 @@ type RunnerClassConfig struct {
 	RunnerWorkDir  string   `toml:"runner_work_dir"`
 	Template       string   `toml:"template"`
 	CacheProfile   string   `toml:"cache_profile"`
+	Baseline       bool     `toml:"baseline"`
+	BaselineName   string   `toml:"baseline_name"`
 }
 
 // RunnerClass is a fully resolved runner class used by the composition root.
@@ -69,6 +74,8 @@ type RunnerClass struct {
 	RunnerWorkDir  string
 	Template       string
 	Cache          CacheConfig
+	Baseline       bool
+	BaselineName   string
 }
 
 // ContainerConfig selects and configures the container runtime provider.
@@ -167,6 +174,16 @@ type RunnerObservabilityConfig struct {
 	MaxLifecycleBytes    int64    `toml:"max_lifecycle_bytes"`
 }
 
+type RunnerDistributionConfig struct {
+	Enabled        bool     `toml:"enabled"`
+	Repository     string   `toml:"repository"`
+	Platform       string   `toml:"platform"`
+	CacheDir       string   `toml:"cache_dir"`
+	VersionFile    string   `toml:"version_file"`
+	CheckInterval  Duration `toml:"check_interval"`
+	RetainVersions int      `toml:"retain_versions"`
+}
+
 // StateConfig selects and configures the state store provider.
 type StateConfig struct {
 	Provider   string          `toml:"provider"`
@@ -216,12 +233,14 @@ func Load(path string) (*Config, error) {
 func defaults() *Config {
 	return &Config{
 		Scaler: ScalerConfig{
-			Prefix:         "gh-runner-auto",
-			MaxAutoRunners: 6,
-			IdleTimeout:    Duration{300 * time.Second},
-			PollInterval:   Duration{30 * time.Second},
-			Labels:         "self-hosted,linux,x64",
-			RunnerWorkDir:  "_work",
+			Prefix:             "gh-runner-auto",
+			MaxAutoRunners:     6,
+			IdleTimeout:        Duration{300 * time.Second},
+			PollInterval:       Duration{30 * time.Second},
+			QueueAuditInterval: Duration{5 * time.Minute},
+			DemandTTL:          Duration{30 * time.Minute},
+			Labels:             "self-hosted,linux,x64",
+			RunnerWorkDir:      "_work",
 		},
 		Container: ContainerConfig{
 			Provider: "lxd",
@@ -252,6 +271,12 @@ func defaults() *Config {
 			CollectHost:           true,
 		},
 		RunnerObservability: RunnerObservabilityConfig{MaxRetries: 3, InitialBackoff: Duration{time.Second}, MaxBackoff: Duration{time.Minute}, MaxSourceBytes: 16 << 20, MaxLifecycleBytes: 128 << 20},
+		RunnerDistribution: RunnerDistributionConfig{
+			Repository: "actions/runner", Platform: "linux-x64",
+			CacheDir:      "/var/lib/gh-runner-scaler/runner-distributions",
+			VersionFile:   "/var/lib/gh-runner-scaler/runner-distributions/current-version",
+			CheckInterval: Duration{24 * time.Hour}, RetainVersions: 2,
+		},
 		State: StateConfig{
 			Provider:   "filesystem",
 			Filesystem: FilesystemState{Dir: ".state"},
@@ -314,6 +339,12 @@ func validate(cfg *Config) error {
 	if cfg.Scaler.PollInterval.Duration <= 0 {
 		return fmt.Errorf("scaler.poll_interval must be > 0")
 	}
+	if cfg.Scaler.QueueAuditInterval.Duration <= 0 {
+		return fmt.Errorf("scaler.queue_audit_interval must be > 0")
+	}
+	if cfg.Scaler.DemandTTL.Duration <= 0 {
+		return fmt.Errorf("scaler.demand_ttl must be > 0")
+	}
 	if strings.TrimSpace(cfg.CI.Org) != "" && strings.TrimSpace(cfg.CI.Repo) != "" {
 		return fmt.Errorf("ci must set either org or repo, not both")
 	}
@@ -339,6 +370,7 @@ func validate(cfg *Config) error {
 	}
 	seenIDs := make(map[string]struct{}, len(classes))
 	seenPrefixes := make(map[string]string, len(classes))
+	baselines := 0
 	for _, class := range classes {
 		if _, exists := seenIDs[class.ID]; exists {
 			return fmt.Errorf("runner class id must be unique: %s", class.ID)
@@ -348,6 +380,25 @@ func validate(cfg *Config) error {
 			return fmt.Errorf("runner class prefix must be unique: %s used by %s and %s", class.Prefix, previous, class.ID)
 		}
 		seenPrefixes[class.Prefix] = class.ID
+		if class.Baseline {
+			baselines++
+			if class.BaselineName == "" {
+				return fmt.Errorf("runner class %s baseline_name is required", class.ID)
+			}
+		}
+	}
+	if baselines > 1 {
+		return fmt.Errorf("only one runner class may enable baseline")
+	}
+	for _, class := range classes {
+		if !class.Baseline {
+			continue
+		}
+		for prefix := range seenPrefixes {
+			if strings.HasPrefix(class.BaselineName, prefix) {
+				return fmt.Errorf("runner class %s baseline_name must not start with a managed runner prefix", class.ID)
+			}
+		}
 	}
 	if cfg.Webhook.Enabled && cfg.CI.GitHub.WebhookSecret == "" && cfg.CI.Provider == "github" {
 		return fmt.Errorf("GH_WEBHOOK_SECRET env var is required when webhook is enabled")
@@ -376,8 +427,37 @@ func validate(cfg *Config) error {
 	if err := validateRunnerObservability(cfg.RunnerObservability); err != nil {
 		return err
 	}
+	if err := validateRunnerDistribution(cfg.RunnerDistribution); err != nil {
+		return err
+	}
 	if cfg.State.Filesystem.Dir == "" {
 		return fmt.Errorf("state.filesystem.dir is required")
+	}
+	return nil
+}
+
+func validateRunnerDistribution(cfg RunnerDistributionConfig) error {
+	if !cfg.Enabled {
+		return nil
+	}
+	parts := strings.Split(cfg.Repository, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return fmt.Errorf("runner_distribution.repository must be owner/name")
+	}
+	if cfg.Platform != "linux-x64" {
+		return fmt.Errorf("runner_distribution.platform must be linux-x64")
+	}
+	if !filepath.IsAbs(cfg.CacheDir) {
+		return fmt.Errorf("runner_distribution.cache_dir must be absolute")
+	}
+	if !filepath.IsAbs(cfg.VersionFile) {
+		return fmt.Errorf("runner_distribution.version_file must be absolute")
+	}
+	if cfg.CheckInterval.Duration < time.Hour {
+		return fmt.Errorf("runner_distribution.check_interval must be at least 1h")
+	}
+	if cfg.RetainVersions < 2 {
+		return fmt.Errorf("runner_distribution.retain_versions must be at least 2")
 	}
 	return nil
 }
@@ -472,6 +552,7 @@ func (cfg *Config) RunnerClassConfigs() ([]RunnerClass, error) {
 			RunnerWorkDir:  cfg.Scaler.RunnerWorkDir,
 			Template:       cfg.Container.Template,
 			Cache:          cfg.Cache,
+			Baseline:       false,
 		}}, nil
 	}
 
@@ -496,6 +577,8 @@ func (cfg *Config) RunnerClassConfigs() ([]RunnerClass, error) {
 			RunnerWorkDir:  firstNonEmpty(raw.RunnerWorkDir, cfg.Scaler.RunnerWorkDir),
 			Template:       firstNonEmpty(raw.Template, cfg.Container.Template),
 			Cache:          cfg.Cache,
+			Baseline:       raw.Baseline,
+			BaselineName:   strings.TrimSpace(raw.BaselineName),
 		}
 		if raw.MaxAutoRunners != nil {
 			class.MaxAutoRunners = *raw.MaxAutoRunners

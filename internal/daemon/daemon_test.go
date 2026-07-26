@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -444,12 +445,15 @@ func TestHandleStatus_ReturnsDaemonSnapshot(t *testing.T) {
 	if rr.Code != 200 {
 		t.Fatalf("expected 200 response, got %d", rr.Code)
 	}
-	body := rr.Body.String()
-	if !strings.Contains(body, `"webhook_enabled":true`) {
-		t.Fatalf("expected status response to include webhook_enabled, got %s", body)
+	var status statusSnapshot
+	if err := json.Unmarshal(rr.Body.Bytes(), &status); err != nil {
+		t.Fatalf("decode status response: %v", err)
 	}
-	if !strings.Contains(body, `"last_webhook_type":"workflow_job"`) {
-		t.Fatalf("expected status response to include last webhook type, got %s", body)
+	if !status.WebhookEnabled {
+		t.Fatal("WebhookEnabled = false, want true")
+	}
+	if status.LastWebhookType != "workflow_job" {
+		t.Fatalf("LastWebhookType = %q, want workflow_job", status.LastWebhookType)
 	}
 }
 

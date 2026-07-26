@@ -6,6 +6,8 @@ prefix = "gh-runner-auto"
 max_auto_runners = 6
 idle_timeout = "300s"
 poll_interval = "30s"
+queue_audit_interval = "5m"
+demand_ttl = "30m"
 labels = "self-hosted,linux,x64,runner-class-default"
 runner_work_dir = "_work"
 
@@ -88,6 +90,15 @@ initial_backoff = "1s"
 max_backoff = "1m"
 max_source_bytes = 16777216
 max_lifecycle_bytes = 134217728
+
+[runner_distribution]
+enabled = false
+repository = "actions/runner"
+platform = "linux-x64"
+cache_dir = "/var/lib/gh-runner-scaler/runner-distributions"
+version_file = "/var/lib/gh-runner-scaler/runner-distributions/current-version"
+check_interval = "24h"
+retain_versions = 2
 
 # Optional multi-class router configuration.
 # If no [[runner_classes]] entries are present, the daemon synthesizes a single
