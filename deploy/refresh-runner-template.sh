@@ -17,7 +17,9 @@ for command in curl jq sha256sum lxc; do
   }
 done
 
-install -d -m 0755 "${CACHE_DIR}"
+if [[ ! -d "${CACHE_DIR}" ]]; then
+  install -d -m 0755 "${CACHE_DIR}"
+fi
 auth_args=()
 if [[ -n "${GH_SCALER_GITHUB_TOKEN:-}" ]]; then
   auth_args=(-H "Authorization: Bearer ${GH_SCALER_GITHUB_TOKEN}")
@@ -86,24 +88,29 @@ fi
 lxc start "${TEMPLATE}"
 template_started=1
 "${SCRIPT_DIR}/wait-for-lxc-ready.sh" "${TEMPLATE}"
-lxc file push "${archive}" "${TEMPLATE}/tmp/${asset_name}"
+staged_archive="${INSTALL_ROOT}/.incoming-${asset_name}"
+lxc exec "${TEMPLATE}" -- install -d -m 0755 "${INSTALL_ROOT}"
+echo "staging verified runner archive in ${TEMPLATE}:${staged_archive}"
+lxc file push --quiet "${archive}" "${TEMPLATE}${staged_archive}"
 lxc exec "${TEMPLATE}" -- env \
   RUNNER_VERSION="${version}" \
-  RUNNER_ARCHIVE="/tmp/${asset_name}" \
+  RUNNER_ARCHIVE="${staged_archive}" \
   INSTALL_ROOT="${INSTALL_ROOT}" \
   RETAIN_VERSIONS="${RETAIN_VERSIONS}" \
   bash -c '
     set -euo pipefail
+    trap '\''rm -f "${RUNNER_ARCHIVE}"'\'' EXIT
     version_dir="${INSTALL_ROOT}/versions/${RUNNER_VERSION}"
     install -d -m 0755 "${version_dir}"
     tar -xzf "${RUNNER_ARCHIVE}" -C "${version_dir}"
     chown -R runner:runner "${INSTALL_ROOT}"
     link="${INSTALL_ROOT}/.current-${RUNNER_VERSION}"
+    rm -f "${link}"
     ln -s "${version_dir}" "${link}"
     mv -Tf "${link}" "${INSTALL_ROOT}/current"
-    ln -sfn "${INSTALL_ROOT}/current/_diag" /home/runner/_diag
-    ln -sfn "${INSTALL_ROOT}/current/_work" /home/runner/_work
-    rm -f "${RUNNER_ARCHIVE}"
+    rm -rf -- /home/runner/_diag /home/runner/_work
+    ln -s "${INSTALL_ROOT}/current/_diag" /home/runner/_diag
+    ln -s "${INSTALL_ROOT}/current/_work" /home/runner/_work
     mapfile -t versions < <(find "${INSTALL_ROOT}/versions" -mindepth 1 -maxdepth 1 -type d -printf "%f\n" | sort -Vr)
     for ((i=RETAIN_VERSIONS; i<${#versions[@]}; i++)); do
       rm -rf -- "${INSTALL_ROOT}/versions/${versions[$i]}"
@@ -112,7 +119,7 @@ lxc exec "${TEMPLATE}" -- env \
 lxc stop "${TEMPLATE}"
 template_started=0
 
-version_tmp="$(mktemp "${CACHE_DIR}/.current-version.XXXXXX")"
+version_tmp="$(mktemp "$(dirname "${VERSION_FILE}")/.current-version.XXXXXX")"
 printf '%s\n' "${version}" >"${version_tmp}"
 chmod 0644 "${version_tmp}"
 mv -f "${version_tmp}" "${VERSION_FILE}"
