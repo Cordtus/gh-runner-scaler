@@ -8,6 +8,7 @@ VERSION_FILE="${RUNNER_DISTRIBUTION_VERSION_FILE:-${CACHE_DIR}/current-version}"
 RETAIN_VERSIONS="${RUNNER_DISTRIBUTION_RETAIN_VERSIONS:-2}"
 TEMPLATE="${RUNNER_TEMPLATE:-gh-runner-template}"
 INSTALL_ROOT="/home/runner/actions-runner"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 for command in curl jq sha256sum lxc; do
   command -v "${command}" >/dev/null || {
@@ -82,6 +83,7 @@ fi
 
 lxc start "${TEMPLATE}"
 template_started=1
+"${SCRIPT_DIR}/wait-for-lxc-ready.sh" "${TEMPLATE}"
 lxc file push "${archive}" "${TEMPLATE}/tmp/${asset_name}"
 lxc exec "${TEMPLATE}" -- env \
   RUNNER_VERSION="${version}" \
