@@ -6,6 +6,16 @@ import (
 	"github.com/Cordtus/gh-runner-scaler/internal/domain"
 )
 
+func TestExecExitCodeReadsCompletedCommandStatus(t *testing.T) {
+	exitCode, ok := execExitCode(map[string]any{"return": float64(127)})
+	if !ok {
+		t.Fatal("command return code was not recognized")
+	}
+	if exitCode != 127 {
+		t.Fatalf("exit code = %d, want 127", exitCode)
+	}
+}
+
 func TestHostMetricsFromContainers_UsesProvidedSnapshot(t *testing.T) {
 	runtime := &Runtime{}
 

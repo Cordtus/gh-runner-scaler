@@ -295,13 +295,33 @@ func (r *Runtime) ExecCommand(ctx context.Context, name string, cmd []string) (s
 		return "", fmt.Errorf("exec in %s failed: %w (stderr: %s)", name, err, stderr.String())
 	}
 
-	// Check exit code from operation metadata
 	opAPI := op.Get()
-	if opAPI.StatusCode != api.Success {
-		return stdout.String(), fmt.Errorf("exec in %s returned non-zero (stderr: %s)", name, stderr.String())
+	exitCode, ok := execExitCode(opAPI.Metadata)
+	if !ok {
+		return stdout.String(), fmt.Errorf("exec in %s did not report a command exit code (stderr: %s)", name, stderr.String())
+	}
+	if exitCode != 0 {
+		return stdout.String(), fmt.Errorf("exec in %s returned exit code %d (stderr: %s)", name, exitCode, stderr.String())
 	}
 
 	return stdout.String(), nil
+}
+
+func execExitCode(metadata map[string]any) (int, bool) {
+	value, ok := metadata["return"]
+	if !ok {
+		return 0, false
+	}
+	switch code := value.(type) {
+	case float64:
+		return int(code), true
+	case int:
+		return code, true
+	case int64:
+		return int(code), true
+	default:
+		return 0, false
+	}
 }
 
 func waitOperation(ctx context.Context, op lxdclient.Operation) error {
