@@ -2,6 +2,7 @@
 set -euo pipefail
 
 template=${1:-gh-runner-template}
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if ! /snap/bin/lxc info "$template" | grep -q 'Status: STOPPED'; then
   echo "refusing to mutate running template $template" >&2
@@ -10,6 +11,7 @@ fi
 
 /snap/bin/lxc start "$template"
 trap '/snap/bin/lxc stop "$template" --force >/dev/null 2>&1 || true' EXIT
+LXC_BIN=/snap/bin/lxc "${script_dir}/wait-for-lxc-ready.sh" "$template"
 /snap/bin/lxc exec "$template" -- bash -ceu '
 systemctl disable --now promtail.service 2>/dev/null || true
 rm -rf /home/runner/_diag/* /home/runner/_work/*
