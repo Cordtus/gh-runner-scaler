@@ -53,27 +53,29 @@ fi
 expected_sha="${digest#sha256:}"
 archive="${CACHE_DIR}/${asset_name}"
 
-if [[ -f "${VERSION_FILE}" && "$(<"${VERSION_FILE}")" == "${version}" && -f "${archive}" ]]; then
-  actual_sha="$(sha256sum "${archive}" | awk '{print $1}')"
-  if [[ "${actual_sha}" == "${expected_sha}" ]]; then
+archive_verified=false
+if "${SCRIPT_DIR}/verified-runner-archive.sh" "${archive}" "${expected_sha}"; then
+  archive_verified=true
+  if [[ -f "${VERSION_FILE}" && "$(<"${VERSION_FILE}")" == "${version}" ]]; then
     echo "runner distribution ${version} is already verified and installed"
     exit 0
   fi
 fi
 
-download_tmp="$(mktemp "${CACHE_DIR}/.${asset_name}.XXXXXX")"
-curl --fail --silent --show-error --location \
-  -H "Accept: application/octet-stream" \
-  "${auth_args[@]}" \
-  "${asset_url}" >"${download_tmp}"
-actual_sha="$(sha256sum "${download_tmp}" | awk '{print $1}')"
-if [[ "${actual_sha}" != "${expected_sha}" ]]; then
-  echo "error: checksum mismatch for ${asset_name}" >&2
-  exit 1
+if [[ "${archive_verified}" == "false" ]]; then
+  download_tmp="$(mktemp "${CACHE_DIR}/.${asset_name}.XXXXXX")"
+  curl --fail --silent --show-error --location \
+    -H "Accept: application/octet-stream" \
+    "${auth_args[@]}" \
+    "${asset_url}" >"${download_tmp}"
+  if ! "${SCRIPT_DIR}/verified-runner-archive.sh" "${download_tmp}" "${expected_sha}"; then
+    echo "error: checksum mismatch for ${asset_name}" >&2
+    exit 1
+  fi
+  chmod 0644 "${download_tmp}"
+  mv -f "${download_tmp}" "${archive}"
+  download_tmp=""
 fi
-chmod 0644 "${download_tmp}"
-mv -f "${download_tmp}" "${archive}"
-download_tmp=""
 
 status="$(lxc info "${TEMPLATE}" | awk '/^Status:/ {print $2}')"
 if [[ "${status}" != "STOPPED" ]]; then
