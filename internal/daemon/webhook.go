@@ -172,6 +172,7 @@ func (d *Daemon) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		for _, group := range d.groupsForEvent(event) {
 			groupID := group.ID
 			if d.demand != nil {
+				d.demandMu.Lock()
 				var demandErr error
 				if event.Type == domain.EventJobQueued {
 					demandErr = d.demand.Queue(groupID, domain.QueuedJob{
@@ -183,6 +184,7 @@ func (d *Daemon) handleWebhook(w http.ResponseWriter, r *http.Request) {
 				} else {
 					demandErr = d.demand.Clear(groupID, event.JobID)
 				}
+				d.demandMu.Unlock()
 				if demandErr != nil {
 					d.log.Error("failed to persist workflow demand", "runner_group", groupID, "job_id", event.JobID, "error", demandErr)
 				}
