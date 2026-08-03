@@ -277,10 +277,8 @@ func (d *Daemon) auditQueuedJobs(ctx context.Context) {
 				matched = append(matched, job)
 			}
 		}
-		for _, job := range matched {
-			if err := d.demand.Queue(group.ID, job); err != nil {
-				d.log.Error("failed to persist queued job audit", "runner_group", group.ID, "job_id", job.ID, "error", err)
-			}
+		if err := d.demand.Replace(group.ID, matched); err != nil {
+			d.log.Error("failed to persist queued job audit", "runner_group", group.ID, "error", err)
 		}
 		if len(matched) > 0 {
 			d.TriggerGroup(group.ID)
