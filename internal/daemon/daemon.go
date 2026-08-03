@@ -71,6 +71,7 @@ type Daemon struct {
 	triggerCh chan string
 	debouncer *debouncer
 	mu        sync.Mutex
+	demandMu  sync.Mutex
 
 	workflowMu            sync.Mutex
 	workflowDelivered     map[string]struct{}
@@ -266,8 +267,10 @@ func (d *Daemon) auditQueuedJobs(ctx context.Context) {
 		if !ok {
 			continue
 		}
+		d.demandMu.Lock()
 		jobs, err := auditor.ListQueuedJobs(ctx)
 		if err != nil {
+			d.demandMu.Unlock()
 			d.log.Warn("queued job audit failed", "runner_group", group.ID, "error", err)
 			continue
 		}
@@ -277,11 +280,10 @@ func (d *Daemon) auditQueuedJobs(ctx context.Context) {
 				matched = append(matched, job)
 			}
 		}
-		for _, job := range matched {
-			if err := d.demand.Queue(group.ID, job); err != nil {
-				d.log.Error("failed to persist queued job audit", "runner_group", group.ID, "job_id", job.ID, "error", err)
-			}
+		if err := d.demand.Replace(group.ID, matched); err != nil {
+			d.log.Error("failed to persist queued job audit", "runner_group", group.ID, "error", err)
 		}
+		d.demandMu.Unlock()
 		if len(matched) > 0 {
 			d.TriggerGroup(group.ID)
 		}

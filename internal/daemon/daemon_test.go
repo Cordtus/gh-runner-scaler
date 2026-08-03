@@ -7,12 +7,14 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/Cordtus/gh-runner-scaler/internal/demand"
 	"github.com/Cordtus/gh-runner-scaler/internal/domain"
 	"github.com/Cordtus/gh-runner-scaler/internal/engine"
 	"github.com/Cordtus/gh-runner-scaler/internal/iface"
@@ -74,6 +76,28 @@ func (daemonTestState) ListAll(context.Context) (map[string]domain.ContainerStat
 
 type daemonTestCI struct {
 	event *domain.WebhookEvent
+}
+
+type queuedJobAuditCI struct {
+	daemonTestCI
+	jobs []domain.QueuedJob
+}
+
+func (c *queuedJobAuditCI) ListQueuedJobs(context.Context) ([]domain.QueuedJob, error) {
+	return append([]domain.QueuedJob(nil), c.jobs...), nil
+}
+
+type blockingQueuedJobAuditCI struct {
+	daemonTestCI
+	jobs        []domain.QueuedJob
+	listStarted chan struct{}
+	releaseList chan struct{}
+}
+
+func (c *blockingQueuedJobAuditCI) ListQueuedJobs(context.Context) ([]domain.QueuedJob, error) {
+	close(c.listStarted)
+	<-c.releaseList
+	return append([]domain.QueuedJob(nil), c.jobs...), nil
 }
 
 func (d daemonTestCI) ListRunners(context.Context) ([]domain.Runner, error) { return nil, nil }
@@ -296,6 +320,120 @@ func TestGroupsForEvent_FiltersByRepositoryTarget(t *testing.T) {
 	groups := d.groupsForEvent(event)
 	if len(groups) != 1 || groups[0].ID != "personal" {
 		t.Fatalf("expected personal repo group only, got %+v", groups)
+	}
+}
+
+func TestAuditQueuedJobs_ReplacesFormerQueuedDemandWhenLaterAuditIsEmpty(t *testing.T) {
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	statePath := filepath.Join(t.TempDir(), "demand.json")
+	tracker, err := demand.NewTracker(statePath, time.Hour, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	auditor := &queuedJobAuditCI{jobs: []domain.QueuedJob{{
+		ID:       42,
+		Repo:     "Cordtus/the-clearooor",
+		Labels:   []string{"self-hosted", "x64"},
+		QueuedAt: now,
+	}}}
+	d := &Daemon{
+		groups: []RunnerGroup{{
+			ID:          "the-clearooor",
+			Target:      "Cordtus/the-clearooor",
+			RepoScoped:  true,
+			MatchLabels: []string{"self-hosted", "x64"},
+			CI:          auditor,
+		}},
+		demand:    tracker,
+		log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		triggerCh: make(chan string, 1),
+	}
+
+	d.auditQueuedJobs(context.Background())
+	if got := tracker.Snapshot("the-clearooor").QueuedJobs; got != 1 {
+		t.Fatalf("queued jobs after non-empty audit = %d, want 1", got)
+	}
+	<-d.triggerCh
+
+	auditor.jobs = nil
+	d.auditQueuedJobs(context.Background())
+	if got := tracker.Snapshot("the-clearooor").QueuedJobs; got != 0 {
+		t.Fatalf("queued jobs after later empty audit = %d, want 0", got)
+	}
+	reloaded, err := demand.NewTracker(statePath, time.Hour, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reloaded.Snapshot("the-clearooor").QueuedJobs; got != 0 {
+		t.Fatalf("persisted queued jobs after later empty audit = %d, want 0", got)
+	}
+	if got := len(d.triggerCh); got != 0 {
+		t.Fatalf("triggers after empty audit = %d, want 0", got)
+	}
+}
+
+func TestAuditQueuedJobs_RetainsWebhookDemandQueuedWhileAuditSnapshotIsInFlight(t *testing.T) {
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	tracker, err := demand.NewTracker(filepath.Join(t.TempDir(), "demand.json"), time.Hour, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tracker.Queue("the-clearooor", domain.QueuedJob{ID: 1, QueuedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	auditor := &blockingQueuedJobAuditCI{
+		daemonTestCI: daemonTestCI{event: &domain.WebhookEvent{
+			Type:   domain.EventJobQueued,
+			JobID:  2,
+			Repo:   "Cordtus/the-clearooor",
+			Labels: []string{"self-hosted", "x64"},
+		}},
+		listStarted: make(chan struct{}),
+		releaseList: make(chan struct{}),
+	}
+	d := &Daemon{
+		ci: auditor,
+		groups: []RunnerGroup{{
+			ID:          "the-clearooor",
+			Target:      "Cordtus/the-clearooor",
+			RepoScoped:  true,
+			MatchLabels: []string{"self-hosted", "x64"},
+			CI:          auditor,
+		}},
+		demand:    tracker,
+		log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		triggerCh: make(chan string, 2),
+		debouncer: newDebouncer(),
+	}
+
+	auditDone := make(chan struct{})
+	go func() {
+		d.auditQueuedJobs(context.Background())
+		close(auditDone)
+	}()
+	<-auditor.listStarted
+
+	webhookDone := make(chan struct{})
+	go func() {
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{}`))
+		req.Header.Set("X-Hub-Signature-256", "sha256=test")
+		req.Header.Set("X-GitHub-Event", "workflow_job")
+		d.handleWebhook(httptest.NewRecorder(), req)
+		close(webhookDone)
+	}()
+
+	select {
+	case <-webhookDone:
+		// The old implementation allows the webhook write to race ahead of Replace.
+	case <-time.After(100 * time.Millisecond):
+		// A serialized audit keeps the webhook write pending until its replacement completes.
+	}
+	close(auditor.releaseList)
+	<-auditDone
+	<-webhookDone
+
+	if got := tracker.Snapshot("the-clearooor").QueuedJobs; got != 1 {
+		t.Fatalf("queued jobs after audit and concurrent webhook = %d, want 1", got)
 	}
 }
 
