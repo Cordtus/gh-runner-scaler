@@ -105,6 +105,7 @@ retain_versions = 2
 # "default" runner class from [scaler], [container], [cache], and [ci] above.
 # Add runner classes when one scaler process should manage multiple logical
 # runner types with different labels, templates, caps, or cache profiles.
+# See docs/runner-classes-guide.md for how to decide your classes.
 #
 # [cache_profiles.node]
 # enabled = true

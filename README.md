@@ -2,75 +2,126 @@
 
 Demand-driven auto-scaler for GitHub Actions self-hosted runners on LXC containers. It maintains an optional persistent baseline, creates ephemeral overflow only for persisted queued jobs, and tears overflow down after job completion or a safety timeout.
 
-## Deploy Your Own Instance
+## Quickstart
 
-Use this path for a first deployment. The detailed reference sections below explain each part.
+Get a scaler running end-to-end. Each step links to the reference section below
+that explains it in full.
 
-1. Prepare an Ubuntu Linux host with LXD, ZFS storage, Git, curl, and the Go version from `go.mod`.
-2. Create a stopped LXD template named `gh-runner-template` with the GitHub Actions runner files installed under `/home/runner`.
-3. Create a GitHub token with runner-management access for your target organization or repository.
-4. Copy `config.example.toml` to `config.toml`, then set exactly one GitHub target:
-   - `ci.org = "YourOrg"` for organization-scoped runners
-   - `ci.repo = "owner/repo"` for one repository-scoped runner target
-5. Keep `[metrics].enabled = false` until you have a Loki push endpoint. Metrics are optional.
-6. Build and install the service:
+### 1. Prepare the host
+
+An Ubuntu host with LXD (snap), ZFS storage, Git, curl, and the Go version from
+`go.mod`. See [Environment Prerequisites](#environment-prerequisites) for the
+LXD and ZFS setup, including how to run the scaler against a remote LXD host.
+
+### 2. Create the template container
+
+A **stopped** LXD container named `gh-runner-template` with the GitHub Actions
+runner files installed under `/home/runner`. See
+[Template Container](#template-container). Never run `config.sh` on it; every
+ephemeral clone configures itself with a fresh registration token.
+
+### 3. Clone this repo and configure
 
 ```bash
-go build -o gh-runner-scaler ./cmd/scaler/
-sudo install -D -m 0755 gh-runner-scaler /usr/local/bin/gh-runner-scaler
-sudo install -d /etc/gh-runner-scaler /var/lib/gh-runner-scaler/state
-sudo install -m 0644 config.toml /etc/gh-runner-scaler/config.toml
-sudo install -m 0644 deploy/systemd/gh-runner-scaler.service /etc/systemd/system/gh-runner-scaler.service
+git clone https://github.com/<you>/gh-runner-scaler && cd gh-runner-scaler
+cp config.example.toml config.toml
 ```
 
-7. Create `/etc/gh-runner-scaler/env` with the required secrets:
+Decide your runner classes first. The [runner-classes guide](docs/runner-classes-guide.md)
+walks through the decision: enumerate your workloads, group them by template,
+cache, and isolation needs, and pick one class per group. For a single workload
+the top-level `[scaler]`, `[ci]`, and `[cache]` settings are enough; add
+`[[runner_classes]]` blocks when you need multiple logical runner types from one
+daemon. Set exactly one GitHub target via `ci.org` or `ci.repo` unless every
+runner class sets its own.
+
+Keep `[metrics].enabled = false` until you have a Loki push endpoint. Metrics
+are optional.
+
+### 4. Set up the GitHub side
+
+Create a token with self-hosted-runner management access for the target (the
+permissions table is in [GitHub Token](#github-token)), then configure the
+webhook:
+
+```bash
+GH_WEBHOOK_SECRET="$(openssl rand -hex 32)" \
+  ./deploy/setup-github.sh --org YourOrg \
+    --webhook-url https://gh-webhook.example.com/
+```
+
+`deploy/setup-github.sh` validates that the token can manage self-hosted
+runners, creates or updates the `workflow_job` webhook with the given secret,
+and prints the exact `runs-on` labels to add to workflows. Pass `--push` too if
+you use `[webhook.sync_repos]` default-branch cache syncs. Use `--repo owner/name`
+instead of `--org` for a repo-scoped target. It is idempotent — re-run it any
+time to repair the webhook.
+
+### 5. Add secrets on the host
+
+Create `/etc/gh-runner-scaler/env` (mode 600) with the secrets. At minimum:
 
 ```bash
 sudo install -m 0600 /dev/null /etc/gh-runner-scaler/env
 sudoedit /etc/gh-runner-scaler/env
 ```
 
-At minimum:
-
 ```text
 GH_SCALER_GITHUB_TOKEN=...
-GH_WEBHOOK_SECRET=...
+GH_WEBHOOK_SECRET=<the value you gave setup-github.sh>
 ```
 
-8. Run one active reconcile before enabling the daemon:
+The full secret list is in [Secrets (Environment Variables)](#secrets-environment-variables).
+
+### 6. Install and start
+
+Run this from the repo checkout on the scaler host. It builds the binary,
+installs it plus the systemd units and helper scripts, and starts
+`gh-runner-scaler.service`:
+
+```bash
+./deploy/update-server.sh
+```
+
+On a fresh host it installs `config.toml` from the checkout when
+`/etc/gh-runner-scaler/config.toml` does not exist yet. It refuses to start
+unless both `/etc/gh-runner-scaler/config.toml` and `/etc/gh-runner-scaler/env`
+exist. Before the first start it is a good idea to run one active reconcile to
+verify LXD and GitHub connectivity (this is not a dry-run):
 
 ```bash
 sudo sh -c 'set -a; . /etc/gh-runner-scaler/env; set +a; exec /usr/local/bin/gh-runner-scaler reconcile --config /etc/gh-runner-scaler/config.toml'
 ```
 
-`reconcile` is not a dry-run. It may create or clean up managed runners and LXD containers according to the configured target, labels, and scale limits.
-
-9. Start and verify:
+### 7. Verify
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now gh-runner-scaler.service
-sudo systemctl --no-pager --full status gh-runner-scaler.service
-curl http://127.0.0.1:9876/healthz
+curl http://127.0.0.1:9876/healthz      # 200 OK
+curl http://127.0.0.1:9876/statusz      # JSON with reconcile state
+systemctl status gh-runner-scaler
 ```
 
-10. Add the same labels from your config to workflow jobs, for example:
+### 8. Route jobs, then optionally wire up metrics
+
+Add the class labels to workflow jobs, e.g.:
 
 ```yaml
-runs-on: [self-hosted, linux, x64, runner-class-default]
+runs-on: [self-hosted, linux, x64, runner-class-<id>]
 ```
 
-For this repository, the default is:
+The `<id>` must match a `[[runner_classes]]` id in your config. For metrics, set
+`LOKI_PUSH_URL` (and `LOKI_USERNAME`/`LOKI_API_KEY` when Loki uses basic auth)
+in the env file, set `[metrics].enabled = true`, restart the service, and import
+the dashboard into your existing Grafana:
 
-```yaml
-runs-on: [self-hosted, linux, x64, runner-class-gh-runner-scaler]
+```bash
+./deploy/deploy-grafana-dashboard.sh \
+  --url https://grafana.example.com \
+  --token <service-account-token> \
+  --datasource-uid <your-loki-datasource-uid>
 ```
 
-This repo currently provisions nodev2-based runners, so include those labels as well:
-
-```yaml
-runs-on: [self-hosted, linux, x64, nodev2, docker, runner-class-gh-runner-scaler]
-```
+See [Grafana + Loki](#grafana--loki-optional) for datasource details.
 
 ## Nodev2 Targets
 
@@ -114,9 +165,15 @@ provider/
   fsstate/                    -- StateStore via filesystem timestamps
 deploy/
   systemd/gh-runner-scaler.service
-  grafana-dashboard.json          -- repo-maintained dashboard baseline
-  grafana-dashboard-old.json      -- exported/reference dashboard snapshot
+  update-server.sh                  -- build + install + restart on the scaler host
+  setup-github.sh                   -- validate token, create/update webhook
+  deploy-grafana-dashboard.sh       -- import dashboard into an existing Grafana
+  grafana-dashboard.json            -- repo-maintained dashboard baseline
+  refresh-runner-template.sh        -- verified actions/runner distribution install
 loadtest/                         -- synthetic workload repo + capacity tools
+docs/
+  runner-classes-guide.md           -- how to design runner classes
+  runner-orchestration-runbook.md   -- nodev2 ops and rollback
 config.example.toml
 ```
 
@@ -283,7 +340,7 @@ Options:
 
 GitHub publishes webhook source IPs via the [meta API](https://api.github.com/meta) under the `hooks` key.
 
-Configure the webhook on the same org or repository targeted by `ci.org`, `ci.repo`, or each runner class:
+Configure the webhook on the same org or repository targeted by `ci.org`, `ci.repo`, or each runner class. `deploy/setup-github.sh` does this for you (see [Quickstart step 4](#4-set-up-the-github-side)):
 
 | GitHub webhook field | Value |
 |----------------------|-------|
@@ -322,22 +379,18 @@ For Grafana Cloud:
 
 For self-managed Loki, use the Loki push URL and credentials configured for your deployment. If your local Loki has `auth_enabled: false`, set only `LOKI_PUSH_URL`.
 
-Import the repo-maintained baseline dashboard with the available service-account key:
+Import the repo-maintained baseline dashboard with a Grafana service-account
+token using the helper script (it rewrites the datasource UID for you):
 
 ```bash
-export GRAFANA_API_URL="https://your-grafana-host"
-export GRAFANA_SERVICE_ACCOUNT_TOKEN="${GRAFANA_CLOUD_API_KEY}"
-
-jq -c '{dashboard: ., overwrite: true}' deploy/grafana-dashboard.json | \
-  curl -sS -X POST "${GRAFANA_API_URL}/api/dashboards/db" \
-    -H "Authorization: Bearer ${GRAFANA_SERVICE_ACCOUNT_TOKEN}" \
-    -H "Content-Type: application/json" \
-    --data-binary @-
+./deploy/deploy-grafana-dashboard.sh \
+  --url https://your-grafana-host \
+  --token "${GRAFANA_CLOUD_API_KEY}" \
+  --datasource-uid loki
 ```
 
-If your Grafana Loki datasource UID is not `loki`, replace every datasource UID in
-the dashboard JSON or remap it in Grafana after import; otherwise no data will
-render in panels.
+If your Grafana Loki datasource UID is not `loki`, pass that UID via
+`--datasource-uid`; otherwise no data will render in panels.
 
 ---
 
@@ -475,6 +528,8 @@ GitHub-specific settings under `[ci.github]` are currently empty -- token and we
 #### Runner Classes: `[[runner_classes]]`
 
 Runner classes let one daemon manage multiple logical runner types without splitting into separate deployments. If no `[[runner_classes]]` entries are present, the daemon synthesizes one `default` class from the existing `[scaler]`, `[container]`, `[cache]`, and `[ci]` settings, so single-pool configs do not need a runner class block.
+
+For how to decide your classes — which workloads share a template, which get their own cache profile, and how to size them — see [Designing Runner Classes](docs/runner-classes-guide.md).
 
 Each class can override the inherited target, runner prefix, labels, scale cap, idle timeout, work directory, LXD template, and cache profile. Set `enabled = false` to keep a class in config without polling its GitHub APIs or creating runners.
 
@@ -661,12 +716,35 @@ Secrets are **never** stored in the config file. Set them as environment variabl
 
 ## Deploy
 
-### 1. Install binary and config
+### 1. Install binary, units, and config
+
+The streamlined path is `update-server.sh` from the repo checkout on the scaler
+host. It builds the binary, installs it with the systemd units and helper
+scripts, and restarts the service (see [Quickstart](#quickstart)):
+
+```bash
+./deploy/update-server.sh
+```
+
+To install the tracked nodev2 config instead of the repo checkout's `config.toml`:
+
+```bash
+GH_RUNNER_SCALER_CONFIG_SOURCE=deploy/nodev2.config.toml ./deploy/update-server.sh
+```
+
+`update-server.sh` requires a Go toolchain on the host because it builds from
+the checked-out source. It refuses to run before `/etc/gh-runner-scaler/config.toml`
+and `/etc/gh-runner-scaler/env` both exist (unless the repo `config.toml` exists
+and the live config is missing, in which case it installs that once).
+
+Manual equivalent (any host, e.g. building elsewhere and copying the binary):
 
 ```bash
 sudo cp gh-runner-scaler /usr/local/bin/
 sudo mkdir -p /etc/gh-runner-scaler /var/lib/gh-runner-scaler/state
 sudo cp config.toml /etc/gh-runner-scaler/config.toml
+sudo cp deploy/systemd/gh-runner-scaler.service /etc/systemd/system/
+sudo systemctl daemon-reload
 ```
 
 ### 2. Create the secrets env file
@@ -684,37 +762,16 @@ EOF
 sudo chmod 600 /etc/gh-runner-scaler/env
 ```
 
-### 3. Install systemd unit
-
-```bash
-sudo cp deploy/systemd/gh-runner-scaler.service /etc/systemd/system/
-```
-
 The unit reads secrets from `/etc/gh-runner-scaler/env` via `EnvironmentFile=`.
 
-### 4. Remove old services (if upgrading from bash/python version)
-
-```bash
-sudo systemctl disable --now gh-runner-scaler.timer 2>/dev/null
-sudo systemctl disable --now gh-runner-webhook.service 2>/dev/null
-sudo systemctl disable --now gh-runner-metrics.timer 2>/dev/null
-sudo systemctl disable --now gh-runner-ui-sync.timer 2>/dev/null
-sudo rm -f /etc/systemd/system/gh-runner-scaler.timer
-sudo rm -f /etc/systemd/system/gh-runner-webhook.service
-sudo rm -f /etc/systemd/system/gh-runner-metrics.service
-sudo rm -f /etc/systemd/system/gh-runner-metrics.timer
-sudo rm -f /etc/systemd/system/gh-runner-ui-sync.service
-sudo rm -f /etc/systemd/system/gh-runner-ui-sync.timer
-```
-
-### 5. Start
+### 3. Start
 
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now gh-runner-scaler.service
 ```
 
-### 6. Verify
+### 4. Verify
 
 ```bash
 sudo systemctl status gh-runner-scaler
@@ -741,23 +798,11 @@ The scaler-side cache drift, tool-cache env wiring, Buildx local cache root, and
 
 ### Quick update on the server
 
-After a `git pull` on the server checkout, run:
-
-```bash
-./deploy/update-server.sh
-```
-
-The script rebuilds the binary from the current checkout, installs the binary and systemd unit, reloads systemd, and restarts `gh-runner-scaler.service`. It does not overwrite an existing `/etc/gh-runner-scaler/config.toml` or `/etc/gh-runner-scaler/env`.
-It requires a working Go toolchain on the server because it builds from the checked-out source rather than downloading a release artifact.
-
-Before you use it, make sure these runtime files already exist:
-
-```bash
-sudo test -f /etc/gh-runner-scaler/config.toml
-sudo test -f /etc/gh-runner-scaler/env
-```
-
-If `/etc/gh-runner-scaler/config.toml` is missing but the repo checkout has a `config.toml`, the script will install that once. If either file is still missing, the script stops before touching systemd so it does not restart the service into a broken state.
+After a `git pull` on the server checkout, run `./deploy/update-server.sh` (see
+[Deploy step 1](#1-install-binary-units-and-config)). It rebuilds from the
+current checkout, installs the binary and units, reloads systemd, and restarts
+`gh-runner-scaler.service`. It never overwrites an existing
+`/etc/gh-runner-scaler/config.toml` or `/etc/gh-runner-scaler/env`.
 
 On hosts without Go, build the Linux binary somewhere else, copy it to the host, and install it through your normal release process:
 
@@ -815,14 +860,24 @@ gh-runner-scaler version     # print version
 
 ## Grafana Dashboard
 
-Two dashboard artifacts live under `deploy/`:
+`deploy/grafana-dashboard.json` is the repo-maintained baseline dashboard,
+aligned to the current metrics contract. Import it into any Grafana with a Loki
+datasource (self-managed Loki or Grafana Cloud with Loki enabled) via the helper
+script:
 
-- `deploy/grafana-dashboard.json`: repo-maintained baseline dashboard aligned to the current metrics contract.
-- `deploy/grafana-dashboard-old.json`: exported/reference dashboard snapshot using Grafana's newer `elements` + `GridLayout` schema.
+```bash
+./deploy/deploy-grafana-dashboard.sh \
+  --url https://your-grafana-host \
+  --token <service-account-token> \
+  --datasource-uid <loki-datasource-uid>
+```
 
-Treat `deploy/grafana-dashboard.json` as the source of truth for the metrics contract in this repo. Keep `deploy/grafana-dashboard-old.json` for export/schema comparisons or for operators who specifically want the fuller Grafana-export shape.
+The token is a Grafana service-account token (or API key); it can also come from
+`GRAFANA_SERVICE_ACCOUNT_TOKEN` or the legacy `GRAFANA_CLOUD_API_KEY`. The
+`--datasource-uid` rewrites every panel to point at your Loki datasource
+(default `loki`, the value the dashboard ships with).
 
-Both dashboards require Grafana with a Loki datasource receiving metrics from the scaler. That datasource can be backed by self-managed Loki or by Grafana Cloud with Loki enabled. The dashboards show:
+The dashboard shows:
 
 - Runner capacity health, including provisioning runners during scale-up
 - Lifecycle analytics such as queue wait, jobs per runner lifecycle, reuse rate, and scale-down-to-next-scale-up gap
@@ -833,8 +888,6 @@ Both dashboards require Grafana with a Loki datasource receiving metrics from th
 - Recent workflow outcomes plus managed runner container counts and cache pool usage
 
 The dashboards default to `1m` auto-refresh to match the default metrics collection interval. If you change `[metrics].interval`, keep the Grafana refresh interval aligned so panels are not repeatedly redrawn without new samples.
-
-The maintained dashboard baseline expects a Loki datasource UID of `loki`. If your Grafana stack uses a different Loki datasource UID, remap the datasource during import or update the panel datasource settings after import.
 
 ## Load Testing
 
