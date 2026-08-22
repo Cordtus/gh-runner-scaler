@@ -46,11 +46,13 @@ echo "refreshing toolchains and caches in ${TEMPLATE}..."
 exec_in 'command -v rustup >/dev/null && rustup update stable --no-self-update'
 exec_in 'command -v cargo >/dev/null && cargo search --limit 1 serde >/dev/null 2>&1'
 
-# Node / npm global packages.
-exec_in 'command -v npm >/dev/null && npm update -g --no-audit --no-fund'
+# Node / npm: bump npm itself, refresh global packages, then fix known advisories.
+exec_in 'command -v npm >/dev/null && npm install -g npm@latest --no-audit --no-fund'
+exec_in 'command -v npm >/dev/null && npm update -g --no-fund'
+exec_in 'command -v npm >/dev/null && npm audit fix -g --no-fund || true'
 
-# Yarn cache.
-exec_in 'command -v yarn >/dev/null && yarn cache clean'
+# Yarn cache (non-interactive: suppress corepack's yarn-download prompt).
+exec_in 'command -v yarn >/dev/null && export COREPACK_ENABLE_DOWNLOAD_PROMPT=0 && yes | yarn cache clean'
 
 # Python / pip.
 exec_in 'command -v pip3 >/dev/null && pip3 install --upgrade pip >/dev/null 2>&1'
