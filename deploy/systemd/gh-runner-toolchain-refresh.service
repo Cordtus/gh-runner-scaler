@@ -1,0 +1,8 @@
+[Unit]
+Description=Refresh toolchains (Rust/cargo, Node, Yarn, pip) inside the runner template
+Documentation=https://github.com/cordtus/gh-runner-scaler
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/gh-runner-scaler/refresh-runner-toolchains.sh
+TimeoutStartSec=30m
