@@ -1,0 +1,12 @@
+[Unit]
+Description=Weekly refresh of runner template toolchains (Rust/cargo, Node, Yarn, pip)
+
+[Timer]
+OnBootSec=30m
+OnCalendar=weekly
+RandomizedDelaySec=1h
+Persistent=true
+Unit=gh-runner-toolchain-refresh.service
+
+[Install]
+WantedBy=timers.target

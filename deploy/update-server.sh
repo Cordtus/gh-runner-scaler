@@ -12,6 +12,9 @@ LXC_READY_SCRIPT="${LIBEXEC_DIR}/wait-for-lxc-ready.sh"
 ARCHIVE_VERIFY_SCRIPT="${LIBEXEC_DIR}/verified-runner-archive.sh"
 DISTRIBUTION_SERVICE="gh-runner-distribution-refresh.service"
 DISTRIBUTION_TIMER="gh-runner-distribution-refresh.timer"
+TOOLCHAIN_SCRIPT="${LIBEXEC_DIR}/refresh-runner-toolchains.sh"
+TOOLCHAIN_SERVICE="gh-runner-toolchain-refresh.service"
+TOOLCHAIN_TIMER="gh-runner-toolchain-refresh.timer"
 CONFIG_DIR="/etc/gh-runner-scaler"
 CONFIG_PATH="${CONFIG_DIR}/config.toml"
 CONFIG_SOURCE="${GH_RUNNER_SCALER_CONFIG_SOURCE:-}"
@@ -54,6 +57,9 @@ run_as_root install -m 0755 "${TMP_BIN}" "${BIN_PATH}"
 run_as_root install -m 0755 "${REPO_ROOT}/deploy/refresh-runner-template.sh" "${DISTRIBUTION_SCRIPT}"
 run_as_root install -m 0755 "${REPO_ROOT}/deploy/wait-for-lxc-ready.sh" "${LXC_READY_SCRIPT}"
 run_as_root install -m 0755 "${REPO_ROOT}/deploy/verified-runner-archive.sh" "${ARCHIVE_VERIFY_SCRIPT}"
+run_as_root install -m 0755 "${REPO_ROOT}/deploy/refresh-runner-toolchains.sh" "${TOOLCHAIN_SCRIPT}"
+run_as_root install -m 0644 "${REPO_ROOT}/deploy/systemd/${TOOLCHAIN_SERVICE}" "/etc/systemd/system/${TOOLCHAIN_SERVICE}"
+run_as_root install -m 0644 "${REPO_ROOT}/deploy/systemd/${TOOLCHAIN_TIMER}" "/etc/systemd/system/${TOOLCHAIN_TIMER}"
 run_as_root install -m 0644 "${REPO_ROOT}/deploy/systemd/gh-runner-scaler.service" "${UNIT_PATH}"
 run_as_root install -m 0644 "${REPO_ROOT}/deploy/systemd/${DISTRIBUTION_SERVICE}" "/etc/systemd/system/${DISTRIBUTION_SERVICE}"
 run_as_root install -m 0644 "${REPO_ROOT}/deploy/systemd/${DISTRIBUTION_TIMER}" "/etc/systemd/system/${DISTRIBUTION_TIMER}"
@@ -82,6 +88,9 @@ if [[ ! -f "${ENV_PATH}" ]]; then
   echo "error: ${ENV_PATH} does not exist; create it before running this update script" >&2
   exit 1
 fi
+
+echo "Enabling weekly toolchain refresh timer"
+run_as_root systemctl enable --now "${TOOLCHAIN_TIMER}"
 
 echo "Reloading and restarting ${SERVICE_NAME}"
 run_as_root systemctl daemon-reload
