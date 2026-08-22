@@ -20,7 +20,7 @@ cleanup() {
 trap cleanup EXIT
 
 status="$(lxc info "${TEMPLATE}" | awk '/^Status:/ {print $2}')"
-if [[ "${status}" != "stopped" ]]; then
+if [[ "${status,,}" != "stopped" ]]; then
   echo "error: template ${TEMPLATE} must be stopped, found ${status:-unknown}" >&2
   exit 1
 fi
