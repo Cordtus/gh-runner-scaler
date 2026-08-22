@@ -12,26 +12,34 @@ awk '/^\[\[runner_classes\]\]/{print "---"} /^(id|org|repo|prefix|labels|match_l
 
 changed=0
 
-# 1. Ensure a personal (Cordtus) runner class that serves runner-class-cac exists.
-if grep -qE 'id = "cordtus"|id = "Cordtus"|id = "personal"' "$CONFIG"; then
-  echo "personal runner class present"
-else
-  echo "adding personal (Cordtus) runner class"
-  cp "$CONFIG" "$CONFIG.bak.$(date +%s)"
-  {
-    echo
-    echo '[[runner_classes]]'
-    echo 'id = "personal"'
-    echo 'org = "Cordtus"'
-    echo 'prefix = "gh-runner-cac"'
-    echo 'labels = "self-hosted,linux,x64,runner-class-cac"'
-    echo 'match_labels = ["self-hosted", "linux", "x64", "runner-class-cac"]'
-    echo 'max_auto_runners = 6'
-    echo 'runner_work_dir = "_work"'
-    echo 'template = "gh-runner-template"'
-  } >> "$CONFIG"
-  changed=1
-fi
+# 1. Ensure a personal (Cordtus) runner class that serves runner-class-cac exists,
+#    with a UNIQUE prefix (prefixes must not collide across classes).
+python3 - "$CONFIG" <<'PY'
+import re, sys
+p = sys.argv[1]
+s = open(p).read()
+# find the id="personal" class block and force its prefix to a unique value
+has_personal = re.search(r'\[\[runner_classes\]\](?:(?!\[\[).)*?id\s*=\s*"personal"', s, re.S)
+if has_personal:
+    block = has_personal.group(0)
+    new = re.sub(r'prefix\s*=\s*"[^"]*"', 'prefix = "gh-runner-personal"', block)
+    s = s.replace(block, new)
+else:
+    s += '''
+[[runner_classes]]
+id = "personal"
+org = "Cordtus"
+prefix = "gh-runner-personal"
+labels = "self-hosted,linux,x64,runner-class-cac"
+match_labels = ["self-hosted", "linux", "x64", "runner-class-cac"]
+max_auto_runners = 6
+runner_work_dir = "_work"
+template = "gh-runner-template"
+'''
+open(p, 'w').write(s)
+print("personal runner class ensured (prefix=gh-runner-personal)")
+PY
+changed=1
 
 # 2. Ensure the cac-group class has max_auto_runners >= 1.
 if awk 'BEGIN{c=0} /^\[\[runner_classes\]\]/{id=""} /^id *=/{id=$3} id=="\"cac-group\"" && /max_auto_runners/ {v=$3; gsub(/[^0-9]/,"",v); if(v+0<1){print "needs bump"}}' "$CONFIG" | grep -q needs; then
