@@ -157,9 +157,21 @@ func (r *Reconciler) ReconcileDemand(ctx context.Context, demand domain.Capacity
 			r.state.SetLastActive(ctx, c.Name, now)
 
 		case !runnerFound:
-			// Container exists but has no registered runner -- orphaned.
-			// This catches containers left behind by crashed scalers,
-			// failed config.sh, or manual intervention.
+			// Container is running but has no registered runner. For ephemeral
+			// runners this is the normal post-job state (the runner deregisters
+			// itself after completing), so tearing down immediately can cancel a
+			// just-finished job before GitHub records it as completed. Give the
+			// container a grace period since it was last active before treating it
+			// as orphaned. Genuinely orphaned containers (crashed scaler, failed
+			// config.sh, manual intervention) are still cleaned up after the grace.
+			lastActive, err := r.state.GetLastActive(ctx, c.Name)
+			if err != nil {
+				r.state.SetLastActive(ctx, c.Name, now)
+				lastActive = now
+			}
+			if now.Sub(lastActive) < r.pendingAvailabilityGrace() {
+				continue
+			}
 			r.log.Info("orphaned container (no registered runner)", "event_type", "scale_down", "action", "eligible", "container", c.Name, "runner", c.Name, "detail", "orphaned container")
 			handleScaleDown(c.Name)
 
