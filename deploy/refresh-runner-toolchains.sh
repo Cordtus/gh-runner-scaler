@@ -57,9 +57,10 @@ exec_in 'command -v yarn >/dev/null && export COREPACK_ENABLE_DOWNLOAD_PROMPT=0 
 # Python / pip.
 exec_in 'command -v pip3 >/dev/null && pip3 install --upgrade pip >/dev/null 2>&1'
 
-# Optional full system package update (opt-in; the template is a curated image).
+# Install common build toolchain deps (needed for Rust/OpenSSL, native npm/gem
+# modules, etc.) and optionally a full system update. Opt-in via APT_FLAG=1.
 if [[ "${APT_FLAG}" == "1" ]]; then
-  exec_in 'export DEBIAN_FRONTEND=noninteractive && apt-get update -y && apt-get upgrade -y'
+  exec_in 'export DEBIAN_FRONTEND=noninteractive && apt-get update -y && apt-get install -y --no-install-recommends pkg-config build-essential libssl-dev libclang-dev && apt-get upgrade -y'
 fi
 
 echo "toolchain refresh complete for ${TEMPLATE}"
