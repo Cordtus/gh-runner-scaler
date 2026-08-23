@@ -894,6 +894,8 @@ func TestScaleDown_OrphanedContainer(t *testing.T) {
 		prefix:      "auto",
 	}
 	state := newMockState()
+	// Orphan has been inactive longer than the grace period, so it must be cleaned up.
+	state.states["auto-1"] = time.Now().Add(-10 * time.Minute)
 
 	r := newTestReconciler(runtime, ci, state, nil)
 
@@ -906,6 +908,34 @@ func TestScaleDown_OrphanedContainer(t *testing.T) {
 	defer runtime.mu.Unlock()
 	if _, ok := runtime.containers["auto-1"]; ok {
 		t.Error("orphaned container should have been cleaned up")
+	}
+}
+
+func TestScaleDown_OrphanedGracePeriod(t *testing.T) {
+	runtime := newMockRuntime()
+	runtime.containers["auto-1"] = domain.StatusRunning
+
+	ci := &mockCI{
+		// No runners match auto-1, but it was recently active (just deregistered).
+		runners:     []domain.Runner{{ID: 1, Name: "permanent", Busy: false, Status: "online", Labels: []string{"self-hosted"}}},
+		removeToken: "remove-token",
+		prefix:      "auto",
+	}
+	state := newMockState()
+	// Recently active: within the grace period, so it must NOT be torn down yet
+	// (gives GitHub time to record the completed job instead of cancelling it).
+	state.states["auto-1"] = time.Now().Add(-30 * time.Second)
+
+	r := newTestReconciler(runtime, ci, state, nil)
+
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if _, ok := runtime.containers["auto-1"]; !ok {
+		t.Error("recently-active orphaned container should be kept during the grace period")
 	}
 }
 
