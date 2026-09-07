@@ -166,15 +166,11 @@ type LokiConfig struct {
 // RunnerObservabilityConfig controls per-runner diagnostic and job-log delivery.
 // Credentials are deliberately rejected: ephemeral containers use an internal endpoint only.
 type RunnerObservabilityConfig struct {
-	Enabled              bool     `toml:"enabled"`
-	PushURL              string   `toml:"-"`
-	HealthURL            string   `toml:"-"`
-	CredentialConfigured bool     `toml:"-"`
-	MaxRetries           int      `toml:"max_retries"`
-	InitialBackoff       Duration `toml:"initial_backoff"`
-	MaxBackoff           Duration `toml:"max_backoff"`
-	MaxSourceBytes       int64    `toml:"max_source_bytes"`
-	MaxLifecycleBytes    int64    `toml:"max_lifecycle_bytes"`
+	Enabled              bool   `toml:"enabled"`
+	PushURL              string `toml:"-"`
+	HealthURL            string `toml:"-"`
+	CredentialConfigured bool   `toml:"-"`
+	MaxRetries           int    `toml:"max_retries"`
 }
 
 type RunnerDistributionConfig struct {
@@ -273,7 +269,7 @@ func defaults() *Config {
 			WorkflowRepoBatchSize: 25,
 			CollectHost:           true,
 		},
-		RunnerObservability: RunnerObservabilityConfig{MaxRetries: 3, InitialBackoff: Duration{time.Second}, MaxBackoff: Duration{time.Minute}, MaxSourceBytes: 16 << 20, MaxLifecycleBytes: 128 << 20},
+		RunnerObservability: RunnerObservabilityConfig{MaxRetries: 3},
 		RunnerDistribution: RunnerDistributionConfig{
 			Repository: "actions/runner", Platform: "linux-x64",
 			CacheDir:      "/var/lib/gh-runner-scaler/runner-distributions",
@@ -478,8 +474,8 @@ func validateRunnerObservability(cfg RunnerObservabilityConfig) error {
 			return fmt.Errorf("%s is required and must be an absolute URL", name)
 		}
 	}
-	if cfg.MaxRetries < 0 || cfg.InitialBackoff.Duration <= 0 || cfg.MaxBackoff.Duration < cfg.InitialBackoff.Duration || cfg.MaxSourceBytes <= 0 || cfg.MaxLifecycleBytes < cfg.MaxSourceBytes {
-		return fmt.Errorf("runner_observability has invalid retry or size limits")
+	if cfg.MaxRetries < 0 {
+		return fmt.Errorf("runner_observability has invalid retry limit")
 	}
 	return nil
 }

@@ -38,6 +38,14 @@ cd "${repo_root}"
 GH_RUNNER_SCALER_CONFIG_SOURCE=deploy/nodev2.config.toml ./deploy/update-server.sh
 
 systemctl is-active --quiet gh-runner-scaler.service
-./deploy/wait-for-http-ready.sh --timeout 30 http://127.0.0.1:9876/statusz
-curl --fail --silent --show-error --max-time 5 http://127.0.0.1:9876/statusz
+status_url="http://127.0.0.1:9876/statusz"
+deadline=$((SECONDS + 30))
+while ! curl --fail --silent --show-error --max-time 2 "${status_url}" >/dev/null 2>&1; do
+  if (( SECONDS >= deadline )); then
+    echo "error: gh-runner-scaler did not become ready within 30s" >&2
+    exit 1
+  fi
+  sleep 0.25
+done
+curl --fail --silent --show-error --max-time 5 "${status_url}"
 printf '\nDeployment complete. Trigger one disposable Actions job and inspect runner logs and issue-events in Grafana.\n'

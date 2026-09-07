@@ -73,13 +73,8 @@ type Daemon struct {
 	mu        sync.Mutex
 	demandMu  sync.Mutex
 
-	workflowMu            sync.Mutex
-	workflowDelivered     map[string]struct{}
-	workflowDeliveredKeys []string
-
-	issueMu            sync.Mutex
-	issueDelivered     map[string]struct{}
-	issueDeliveredKeys []string
+	workflowDelivered *seenCache[domain.WorkflowMetrics]
+	issueDelivered    *seenCache[domain.LogEntry]
 
 	analyticsMu            sync.Mutex
 	logAnalyticsCached     bool
@@ -178,8 +173,8 @@ func NewWithRunnerGroups(
 		log:               log,
 		triggerCh:         make(chan string, len(groups)+1),
 		debouncer:         newDebouncer(),
-		workflowDelivered: make(map[string]struct{}),
-		issueDelivered:    make(map[string]struct{}),
+		workflowDelivered: newSeenCache[domain.WorkflowMetrics](cfg.StateDir, workflowMetricCacheFile, workflowMetricCacheLimit),
+		issueDelivered:    newSeenCache[domain.LogEntry](cfg.StateDir, issueEventCacheFile, workflowMetricCacheLimit),
 		lifecycleCtx:      context.Background(),
 	}
 	if cfg.StateDir != "" && cfg.DemandTTL > 0 {
@@ -190,8 +185,8 @@ func NewWithRunnerGroups(
 			d.demand = tracker
 		}
 	}
-	d.loadWorkflowMetricCache()
-	d.loadIssueEventCache()
+	d.workflowDelivered.load(log, "workflow metrics")
+	d.issueDelivered.load(log, "issue events")
 	return d
 }
 
@@ -664,7 +659,7 @@ func (d *Daemon) collectWorkflowMetrics(ctx context.Context) {
 		if err != nil {
 			log.Warn("failed to collect workflow metrics", "error", err)
 		} else if len(wm) > 0 {
-			wm = d.filterNewWorkflowMetrics(wm)
+			wm = d.workflowDelivered.filterNew(wm, workflowMetricKey)
 		}
 		if len(wm) > 0 && needsEnrichment {
 			enriched, enrichErr := group.CI.EnrichWorkflowMetrics(ctx, wm)
@@ -679,7 +674,7 @@ func (d *Daemon) collectWorkflowMetrics(ctx context.Context) {
 			if err := group.Metrics.PushWorkflowMetrics(ctx, wm); err != nil {
 				log.Error("failed to push workflow metrics", "error", err)
 			} else {
-				d.markWorkflowMetricsDelivered(wm)
+				d.workflowDelivered.markDelivered(wm, workflowMetricKey, d.log, "workflow metrics")
 			}
 		}
 	}
@@ -815,57 +810,6 @@ func buildRunnerMetrics(runners []domain.Runner, containers []domain.Container, 
 	m.Runners = details
 
 	return m
-}
-
-func (d *Daemon) filterNewWorkflowMetrics(runs []domain.WorkflowMetrics) []domain.WorkflowMetrics {
-	d.workflowMu.Lock()
-	defer d.workflowMu.Unlock()
-
-	if d.workflowDelivered == nil {
-		d.workflowDelivered = make(map[string]struct{})
-	}
-
-	fresh := make([]domain.WorkflowMetrics, 0, len(runs))
-	batchSeen := make(map[string]struct{}, len(runs))
-	for _, run := range runs {
-		key := workflowMetricKey(run)
-		if _, seen := d.workflowDelivered[key]; seen {
-			continue
-		}
-		if _, seen := batchSeen[key]; seen {
-			continue
-		}
-		batchSeen[key] = struct{}{}
-		fresh = append(fresh, run)
-	}
-	return fresh
-}
-
-func (d *Daemon) markWorkflowMetricsDelivered(runs []domain.WorkflowMetrics) {
-	d.workflowMu.Lock()
-	defer d.workflowMu.Unlock()
-
-	if d.workflowDelivered == nil {
-		d.workflowDelivered = make(map[string]struct{})
-	}
-
-	for _, run := range runs {
-		key := workflowMetricKey(run)
-		if _, exists := d.workflowDelivered[key]; exists {
-			continue
-		}
-		d.workflowDelivered[key] = struct{}{}
-		d.workflowDeliveredKeys = append(d.workflowDeliveredKeys, key)
-	}
-
-	for len(d.workflowDeliveredKeys) > workflowMetricCacheLimit {
-		oldest := d.workflowDeliveredKeys[0]
-		d.workflowDeliveredKeys = d.workflowDeliveredKeys[1:]
-		delete(d.workflowDelivered, oldest)
-	}
-	if err := d.persistWorkflowMetricCacheLocked(); err != nil {
-		d.log.Warn("failed to persist workflow metric cache", "error", err)
-	}
 }
 
 func workflowMetricKey(run domain.WorkflowMetrics) string {

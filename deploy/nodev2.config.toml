@@ -302,10 +302,6 @@ collect_host = true
 # the internal unauthenticated Loki service; credentials are never copied into runners.
 enabled = true
 max_retries = 3
-initial_backoff = "1s"
-max_backoff = "1m"
-max_source_bytes = 16777216
-max_lifecycle_bytes = 134217728
 
 [runner_distribution]
 enabled = true

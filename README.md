@@ -185,12 +185,8 @@ deploy/
   refresh-runner-template.sh        -- verified actions/runner distribution install
   verified-runner-archive.sh        -- verify archive + install into stopped template
   refresh-runner-toolchains.sh      -- prewarm common build deps into the template
-  apply-toolchain-refresh.sh        -- install/run helper for toolchain refresh
   prepare-runner-template-observability.sh
   diagnose-workflow-metrics.sh      -- inspect workflow-metrics delivery
-  ensure-cac-runner-class.sh        -- ensure cac-group provisioning fix applied
-  fix-self-hosted-provisioning.sh   -- one-off provisioning repair
-  wait-for-http-ready.sh            -- poll an HTTP endpoint until ready
   wait-for-lxc-ready.sh             -- poll an LXC container until ready
 loadtest/                         -- synthetic workload repo + capacity tools
 docs/

@@ -87,10 +87,6 @@ org = ""                       # org-scoped runners; set either org or repo
 # this feature: ephemeral runner containers must not receive service secrets.
 enabled = false
 max_retries = 3
-initial_backoff = "1s"
-max_backoff = "1m"
-max_source_bytes = 16777216
-max_lifecycle_bytes = 134217728
 
 [runner_distribution]
 enabled = false

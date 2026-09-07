@@ -177,7 +177,7 @@ func wireRunnerGroups(cfg *config.Config, log *slog.Logger) ([]daemon.RunnerGrou
 			return nil, nil, fmt.Errorf("runner class %s: %w", class.ID, err)
 		}
 
-		classMetrics := wireMetricsBackend(cfg, class)
+		classMetrics := wireMetricsBackendForTarget(cfg, class.TargetName())
 		var observability *runnerobs.Bootstrapper
 		if cfg.RunnerObservability.Enabled {
 			observability = &runnerobs.Bootstrapper{Executor: runtime, Config: runnerobs.Config{PushURL: cfg.RunnerObservability.PushURL, MaxRetries: cfg.RunnerObservability.MaxRetries}, HealthURL: cfg.RunnerObservability.HealthURL, GroupID: class.ID, Target: class.TargetName()}
@@ -283,10 +283,6 @@ func githubTargetCacheKey(class config.RunnerClass) string {
 		return strings.ToLower("repo:" + class.Repo)
 	}
 	return strings.ToLower("org:" + class.Org)
-}
-
-func wireMetricsBackend(cfg *config.Config, class config.RunnerClass) iface.MetricsBackend {
-	return wireMetricsBackendForTarget(cfg, class.TargetName())
 }
 
 func wireMetricsBackendForTarget(cfg *config.Config, target string) iface.MetricsBackend {

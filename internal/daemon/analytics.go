@@ -33,7 +33,7 @@ func (d *Daemon) collectLogDerivedMetrics(ctx context.Context) {
 		d.log.Error("failed to push lifecycle metrics", "error", err)
 	}
 
-	issueEntries := d.filterNewIssueEntries(issueCandidates)
+	issueEntries := d.issueDelivered.filterNew(issueCandidates, issueEventKey)
 	if len(issueEntries) == 0 {
 		return
 	}
@@ -47,7 +47,7 @@ func (d *Daemon) collectLogDerivedMetrics(ctx context.Context) {
 		d.log.Error("failed to push issue events", "event_type", "issue_events", "action", "push_failed", "error", err)
 		return
 	}
-	d.markIssueEntriesDelivered(issueEntries)
+	d.issueDelivered.markDelivered(issueEntries, issueEventKey, d.log, "issue events")
 }
 
 func (d *Daemon) cachedLogDerivedMetrics(version uint64) (domain.LifecycleMetrics, []domain.LogEntry, bool) {
