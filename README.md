@@ -125,19 +125,30 @@ See [Grafana + Loki](#grafana--loki-optional) for datasource details.
 
 ## Nodev2 Targets
 
-The checked-in nodev2 target config lives at `deploy/nodev2.config.toml`. It
-serves `CAC-Group` as an organization-scoped target. Its workload classes are
-generic: `node`, `node-foundry`, and `node-browser` provide the Node.js,
-Node.js-plus-Foundry, and Node.js-plus-Playwright cache profiles used by
-Poolbet. The GitHub registration for those classes is repo-scoped only because
-GitHub does not offer an owner-wide runner pool for personal repositories; the
-repository name is not part of the workflow routing label.
+The checked-in nodev2 target config lives at `deploy/nodev2.config.toml` and
+serves two account shapes:
 
-GitHub does not provide one self-hosted runner pool for every repository owned
-by a personal user account. Add a repo-scoped registration only to make a
-generic workload class available to that repository. Reuse the workload labels
-and cache profiles whenever they fit; add a new class only when its toolchain,
-resource, isolation, or cache needs materially differ.
+- **`CAC-Group` (organization)** -- one org-scoped catch-all class
+  (`cac-group`) with the `runner-class-cac` label set. Org-level runners give
+  every repo in the org a shared pool, so a single class covers all of them.
+- **`Cordtus` (personal account)** -- GitHub does not offer an owner-wide
+  runner pool for personal repositories, so each repo gets its own repo-scoped
+  class. To keep the setup catch-all in spirit, the `cordtus-*` classes
+  (`bmntpoolslist`, `cosmoclerk`, `gist-manager`, `grpcwebexplorer`,
+  `stickerbot`, `the-queriooor`) all reuse the same `runner-class-cac` label
+  and the default cache profile, so any workflow on those repos can route with
+  a single label instead of a per-repo one.
+- **Specialized classes** -- `gh-runner-scaler`, `the-clearooor`, `qmkui`,
+  `the-downloadooor`, and poolbet's `node` / `node-foundry` / `node-browser`
+  (the Node.js, Node.js-plus-Foundry, and Node.js-plus-Playwright cache
+  profiles, with `node` keeping the persistent `gh-runner-primary` baseline)
+  exist only because their toolchain, isolation, or cache needs differ from the
+  catch-all.
+
+The rule: reuse the workload labels and cache profiles whenever they fit; add
+a new class only when its toolchain, resource, isolation, or cache needs
+materially differ. The repository name is never part of the routing label --
+GitHub routes jobs onto runners by labels alone.
 
 The live service reads `/etc/gh-runner-scaler/config.toml`; after changing the
 tracked nodev2 config, install it to that path and restart
@@ -164,12 +175,23 @@ provider/
   loki/                       -- MetricsBackend via Loki HTTP push
   fsstate/                    -- StateStore via filesystem timestamps
 deploy/
-  systemd/gh-runner-scaler.service
+  systemd/                          -- gh-runner-scaler, distribution-refresh,
+                                     toolchain-refresh services and timers
   update-server.sh                  -- build + install + restart on the scaler host
   setup-github.sh                   -- validate token, create/update webhook
   deploy-grafana-dashboard.sh       -- import dashboard into an existing Grafana
   grafana-dashboard.json            -- repo-maintained dashboard baseline
+  deploy-runner-observability.sh    -- full nodev2 observability deploy
   refresh-runner-template.sh        -- verified actions/runner distribution install
+  verified-runner-archive.sh        -- verify archive + install into stopped template
+  refresh-runner-toolchains.sh      -- prewarm common build deps into the template
+  apply-toolchain-refresh.sh        -- install/run helper for toolchain refresh
+  prepare-runner-template-observability.sh
+  diagnose-workflow-metrics.sh      -- inspect workflow-metrics delivery
+  ensure-cac-runner-class.sh        -- ensure cac-group provisioning fix applied
+  fix-self-hosted-provisioning.sh   -- one-off provisioning repair
+  wait-for-http-ready.sh            -- poll an HTTP endpoint until ready
+  wait-for-lxc-ready.sh             -- poll an LXC container until ready
 loadtest/                         -- synthetic workload repo + capacity tools
 docs/
   runner-classes-guide.md           -- how to design runner classes
@@ -348,6 +370,16 @@ Configure the webhook on the same org or repository targeted by `ci.org`, `ci.re
 | Content type | `application/json` |
 | Secret | The same value as `GH_WEBHOOK_SECRET` |
 | Events | `workflow_job`; also `push` if `[webhook.sync_repos]` is used |
+
+**Every GitHub target that hosts a runner class needs its own webhook.** A
+repo-scoped class whose repository has no webhook still runs jobs (the poll
+loop and the five-minute queue audit recover the `queued` demand), but the
+daemon never sees the `in_progress` / `completed` events that carry the runner
+name. Those events are what attribute a job to a runner lifecycle, so
+`lifecycle-metrics` panels (queue wait, jobs per lifecycle, reuse rate, and
+scale-down-to-next-scale-up gap) stay empty or zero for that repo. Registering
+a `workflow_job` webhook per repo-scoped target fixes this; `setup-github.sh
+--repo owner/name` creates them idempotently.
 
 The daemon accepts webhook POSTs at `/`. `GET /healthz`, `GET /statusz`, and authenticated `GET /logs` share the same listener.
 

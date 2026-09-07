@@ -158,45 +158,40 @@ The live `deploy/nodev2.config.toml` shows the pattern: one org-scoped
 CAC-Group class plus repo-scoped classes, all sharing one template, with three
 cache profiles for Node, Node+Foundry, and Node+Playwright.
 
+### Catch-all classes on a personal account
+
+An org-scoped class is a true catch-all: every repo in the org can route onto
+it with one shared label. A personal GitHub account cannot host an owner-wide
+pool, so each repository needs its own repo-scoped class. To keep the setup
+catch-all in spirit, give all the repo-scoped classes the **same** class label
+and cache profile so workflows on any of those repos use one label
+(`runner-class-cac` in the nodev2 config) instead of one per repo. Reserve a
+distinct class only for workloads whose toolchain, isolation, or cache needs
+materially differ:
+
 ```toml
 [[runner_classes]]
-id = "node"                       # Node.js + Docker, the busiest pool
-repo = "owner/poolbet"
-prefix = "gh-runner-node"
-labels = "self-hosted,linux,x64,nodev2,docker,runner-class-node"
-match_labels = ["self-hosted", "linux", "x64", "nodev2", "docker", "runner-class-node"]
+id = "personal-repo-a"
+repo = "you/repo-a"
+labels = "self-hosted,linux,x64,nodev2,docker,runner-class-cac"
+match_labels = ["self-hosted", "linux", "x64", "runner-class-cac"]
 max_auto_runners = 2
-template = "gh-runner-template"
-cache_profile = "node"
-baseline = true                   # one persistent warm runner
-baseline_name = "gh-runner-primary"
 
 [[runner_classes]]
-id = "node-foundry"               # same toolchain, isolated cache namespace
-repo = "owner/poolbet"
-prefix = "gh-runner-node-foundry"
-labels = "self-hosted,linux,x64,nodev2,docker,runner-class-node-foundry"
-match_labels = ["self-hosted", "linux", "x64", "nodev2", "docker", "runner-class-node-foundry"]
+id = "personal-repo-b"
+repo = "you/repo-b"
+labels = "self-hosted,linux,x64,nodev2,docker,runner-class-cac"
+match_labels = ["self-hosted", "linux", "x64", "runner-class-cac"]
 max_auto_runners = 2
-template = "gh-runner-template"
-cache_profile = "node-foundry"
-
-[[runner_classes]]
-id = "browser"                    # Playwright-heavy jobs
-repo = "owner/poolbet"
-prefix = "gh-runner-node-browser"
-labels = "self-hosted,linux,x64,nodev2,docker,runner-class-browser"
-match_labels = ["self-hosted", "linux", "x64", "nodev2", "docker", "runner-class-browser"]
-max_auto_runners = 2
-template = "gh-runner-template"
-cache_profile = "node-browser"
 ```
 
-Workflows then route with:
+Both repos route with `runs-on: [self-hosted, linux, x64, runner-class-cac]`.
+Remember that each repo-scoped target also needs its own `workflow_job`
+webhook or its lifecycle analytics stay empty (see the README webhook section).
 
-```yaml
-runs-on: [self-hosted, linux, x64, nodev2, docker, runner-class-node]
-```
+For a persistent baseline (an org's busiest pool that every push hits), add
+`baseline = true` plus a `baseline_name` to that one class and keep the rest
+strictly on-demand.
 
 ## Common mistakes
 
