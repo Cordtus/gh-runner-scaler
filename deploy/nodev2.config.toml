@@ -144,12 +144,62 @@ runner_work_dir = "_work"
 template = "gh-runner-template"
 
 [[runner_classes]]
-id = "cordtus"
-org = "Cordtus"
-prefix = "gh-runner-cordtus"
+id = "cordtus-bmntpoolslist"
+repo = "Cordtus/bmntpoolslist"
+prefix = "gh-runner-bmntpoolslist"
 labels = "self-hosted,linux,x64,nodev2,docker,runner-class-cac"
 match_labels = ["self-hosted", "linux", "x64", "runner-class-cac"]
-max_auto_runners = 4
+max_auto_runners = 2
+runner_work_dir = "_work"
+template = "gh-runner-template"
+
+[[runner_classes]]
+id = "cordtus-cosmoclerk"
+repo = "Cordtus/cosmoclerk"
+prefix = "gh-runner-cosmoclerk"
+labels = "self-hosted,linux,x64,nodev2,docker,runner-class-cac"
+match_labels = ["self-hosted", "linux", "x64", "runner-class-cac"]
+max_auto_runners = 2
+runner_work_dir = "_work"
+template = "gh-runner-template"
+
+[[runner_classes]]
+id = "cordtus-gist-manager"
+repo = "Cordtus/gist-manager"
+prefix = "gh-runner-gist-manager"
+labels = "self-hosted,linux,x64,nodev2,docker,runner-class-cac"
+match_labels = ["self-hosted", "linux", "x64", "runner-class-cac"]
+max_auto_runners = 2
+runner_work_dir = "_work"
+template = "gh-runner-template"
+
+[[runner_classes]]
+id = "cordtus-grpcwebexplorer"
+repo = "Cordtus/grpcwebexplorer"
+prefix = "gh-runner-grpcwebexplorer"
+labels = "self-hosted,linux,x64,nodev2,docker,runner-class-cac"
+match_labels = ["self-hosted", "linux", "x64", "runner-class-cac"]
+max_auto_runners = 2
+runner_work_dir = "_work"
+template = "gh-runner-template"
+
+[[runner_classes]]
+id = "cordtus-stickerbot"
+repo = "Cordtus/stickerbot"
+prefix = "gh-runner-stickerbot"
+labels = "self-hosted,linux,x64,nodev2,docker,runner-class-cac"
+match_labels = ["self-hosted", "linux", "x64", "runner-class-cac"]
+max_auto_runners = 2
+runner_work_dir = "_work"
+template = "gh-runner-template"
+
+[[runner_classes]]
+id = "cordtus-the-queriooor"
+repo = "Cordtus/the-queriooor"
+prefix = "gh-runner-the-queriooor"
+labels = "self-hosted,linux,x64,nodev2,docker,runner-class-cac"
+match_labels = ["self-hosted", "linux", "x64", "runner-class-cac"]
+max_auto_runners = 2
 runner_work_dir = "_work"
 template = "gh-runner-template"
 
