@@ -144,6 +144,16 @@ runner_work_dir = "_work"
 template = "gh-runner-template"
 
 [[runner_classes]]
+id = "cordtus"
+org = "Cordtus"
+prefix = "gh-runner-cordtus"
+labels = "self-hosted,linux,x64,nodev2,docker,runner-class-cac"
+match_labels = ["self-hosted", "linux", "x64", "runner-class-cac"]
+max_auto_runners = 4
+runner_work_dir = "_work"
+template = "gh-runner-template"
+
+[[runner_classes]]
 id = "gh-runner-scaler"
 repo = "Cordtus/gh-runner-scaler"
 prefix = "gh-runner-scaler"
@@ -207,6 +217,17 @@ max_auto_runners = 2
 runner_work_dir = "_work"
 template = "gh-runner-template"
 cache_profile = "node-browser"
+
+[[runner_classes]]
+id = "the-downloadooor"
+repo = "Cordtus/the-downloadooor"
+prefix = "gh-runner-the-downloadooor"
+labels = "self-hosted,linux,x64,nodev2,docker,runner-class-the-downloadooor"
+match_labels = ["self-hosted", "linux", "x64", "nodev2", "docker", "runner-class-the-downloadooor"]
+max_auto_runners = 2
+runner_work_dir = "_work"
+template = "gh-runner-template"
+cache_profile = "node"
 
 [webhook]
 enabled = true
