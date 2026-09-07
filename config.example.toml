@@ -21,6 +21,7 @@ remote = ""                    # empty = local; e.g. "lxd-prod" for remote host
 # remote_url = ""              # HTTPS remote URL
 # remote_cert = ""             # client certificate path
 # remote_key = ""              # client key path
+# network = ""                 # managed LXD network (bridge) for runner NICs; empty = inherit template NIC
 
 [cache]
 enabled = false

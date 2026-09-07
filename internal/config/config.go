@@ -92,6 +92,9 @@ type LXDConfig struct {
 	RemoteURL  string `toml:"remote_url"`
 	RemoteCert string `toml:"remote_cert"`
 	RemoteKey  string `toml:"remote_key"`
+	// Network is the LXD managed network (bridge) to attach runner NICs to.
+	// Empty means inherit the template's existing NIC configuration.
+	Network string `toml:"network"`
 }
 
 // CacheConfig controls the persistent cache volume.

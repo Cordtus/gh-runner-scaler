@@ -227,6 +227,7 @@ func wireRuntimeAndCache(cfg *config.Config, class config.RunnerClass) (iface.Co
 			cfg.Container.LXD.RemoteCert,
 			cfg.Container.LXD.RemoteKey,
 			class.Template,
+			cfg.Container.LXD.Network,
 		)
 		if err != nil {
 			return nil, nil, fmt.Errorf("lxd runtime: %w", err)

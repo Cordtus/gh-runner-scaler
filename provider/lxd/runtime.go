@@ -23,6 +23,7 @@ type Runtime struct {
 	server   lxdclient.InstanceServer
 	template string
 	remote   string // stored for logging; the server connection already targets the remote
+	network  string // managed network to attach runner NICs to; empty inherits template NIC
 }
 
 // New connects to a local or remote LXD daemon and returns a Runtime.
@@ -35,7 +36,7 @@ type Runtime struct {
 //
 // TLS certs are read from certPath/keyPath if provided, or from the
 // standard LXD client config directory (~/.config/lxc/).
-func New(socket, remote, remoteURL, certPath, keyPath, template string) (*Runtime, error) {
+func New(socket, remote, remoteURL, certPath, keyPath, template, network string) (*Runtime, error) {
 	var server lxdclient.InstanceServer
 	var err error
 
@@ -74,6 +75,7 @@ func New(socket, remote, remoteURL, certPath, keyPath, template string) (*Runtim
 		server:   server,
 		template: template,
 		remote:   remote,
+		network:  network,
 	}, nil
 }
 
@@ -218,6 +220,23 @@ func (r *Runtime) CloneFromTemplate(ctx context.Context, name string) error {
 		if _, ok := dev["hwaddr"]; ok {
 			delete(dev, "hwaddr")
 			inst.Devices[devName] = dev
+			changed = true
+		}
+	}
+
+	// Enforce the configured managed network on the clone's NIC so runners
+	// stay on the isolated bridge even if the template device drifts.
+	if r.network != "" {
+		eth0, ok := inst.Devices["eth0"]
+		if !ok {
+			eth0 = map[string]string{"type": "nic", "nictype": "bridged", "name": "eth0"}
+			inst.Devices["eth0"] = eth0
+			changed = true
+		}
+		if eth0["parent"] != r.network {
+			eth0["parent"] = r.network
+			eth0["nictype"] = "bridged"
+			inst.Devices["eth0"] = eth0
 			changed = true
 		}
 	}

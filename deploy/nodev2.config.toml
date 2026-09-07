@@ -18,6 +18,7 @@ template = "gh-runner-template"
 [container.lxd]
 socket = ""
 remote = ""
+network = "ghactbr0"
 
 [cache]
 enabled = true

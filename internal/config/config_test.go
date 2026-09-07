@@ -561,6 +561,9 @@ func TestLoad_Nodev2ConfigIncludesRequiredRunnerTargets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load nodev2 config failed: %v", err)
 	}
+	if cfg.Container.LXD.Network != "ghactbr0" {
+		t.Fatalf("nodev2 LXD network = %q, want ghactbr0", cfg.Container.LXD.Network)
+	}
 	classes, err := cfg.RunnerClassConfigs()
 	if err != nil {
 		t.Fatalf("RunnerClassConfigs failed: %v", err)
